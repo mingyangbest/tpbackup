@@ -38,7 +38,7 @@ https://alistgo.com/tool/wopan/token.html
 ### 2. 部署
 
 ```bash
-git clone https://github.com/bestmingyang/tpbackup.git
+git clone https://github.com/mingyangbest/tpbackup.git
 cd tpbackup
 
 # 准备 compose
