@@ -3,6 +3,9 @@
 联通云盘（沃盘）备份管理台。把「扫描本地目录 → 比对云端 → 增量上传 → 校验 → 记日志」收进一个容器，网页管理，定时调度，上传后逐文件复核。
 
 为 NAS 上的照片、媒体库、文档这类「只增不改」的目录设计，也支持先在宿主机打包快照、再交给它上传的推送模式。
+<img width="1162" height="730" alt="12" src="https://github.com/user-attachments/assets/3ee717d4-47ae-4c6e-a478-770e3b92b6db" />
+<img width="1171" height="711" alt="13" src="https://github.com/user-attachments/assets/7c1da9b8-2788-4ef0-84c2-2c1e352e62f2" />
+<img width="1162" height="717" alt="14" src="https://github.com/user-attachments/assets/7ded0d03-563b-41f8-9d76-ead4a9dd7e08" />
 
 <!-- 建议在这里放一张 Web 界面截图：发布前到 http://<NAS-IP>:8088 截一张主界面 -->
 
