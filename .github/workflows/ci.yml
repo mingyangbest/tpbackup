@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 语法编译检查
+        run: |
+          python -m py_compile app/main.py app/engine.py app/store.py \
+            app/runner.py app/scheduler.py app/notify.py \
+            push.py fetch.py taskstat.py \
+            tools/smoke_test.py tools/verify_e2e.py tools/drill.py \
+            tools/probe_quota.py tools/direct_fetch.py tools/openlist_sync.py
+      - name: pyflakes 静态检查
+        run: |
+          python -m pip install -q pyflakes
+          python -m pyflakes app/ push.py fetch.py taskstat.py tools/
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建镜像
+        run: docker build -t tpbackup:ci .

@@ -1,0 +1,6 @@
+# tpbackup 上传凭据（供宿主机脚本 push.py / fetch.py / taskstat.py 调用 API）。
+# 用法：复制为 api.conf（同目录），改成和 docker-compose.yml 里一致的账号密码。
+# api.conf 已在 .gitignore 里，不会被提交。
+API=http://127.0.0.1:8088/api/jobs/push
+API_USER=admin
+API_PASS=<和 compose 里 TP_PASS 一致>

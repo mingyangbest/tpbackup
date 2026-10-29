@@ -1,0 +1,38 @@
+# tpbackup 服务定义模板。
+# 用法：复制为 docker-compose.yml，把 <...> 占位符改成你自己的值。
+services:
+  tpbackup:
+    build: .
+    image: tpbackup:latest
+    container_name: tpbackup
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      TZ: Asia/Shanghai
+      # ── Web 登录（部署后务必改掉默认密码）──
+      TP_USER: admin
+      TP_PASS: <改成你自己的密码>
+      # ── 数据目录（挂载卷）──
+      TP_DATA: /app/data
+      # ── 目录浏览与任务源目录的允许范围，逗号分隔 ──
+      # 飞牛一般是 /vol1，群晖是 /volume1；填你实际存数据的根
+      TP_ALLOWED_ROOTS: <你的存储根路径>
+      # ── 可选：推送型任务清理旧包时永不删除的云端文件名，逗号分隔 ──
+      # TP_PROTECT_FILES: README.txt
+      # ── 可选：从 OpenList 库导入初始 token（路径指向 OpenList 的 data.db）──
+      # TP_OPENLIST_DB: /vol1/docker/openlist/data/data.db
+      # ── 可选：刷新后的 token 回写 OpenList（需配合 tools/openlist_sync.py）──
+      # TP_SYNC_OPENLIST: "0"
+      # ── 首次启动导入三个示例任务（先改 app/main.py 里的 seeds 再开）──
+      TP_SEED: "0"
+    volumes:
+      # 容器内外路径保持一致，配置里的绝对路径在两边通用
+      - <你的存储根路径>:<你的存储根路径>
+      - ./data:/app/data
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

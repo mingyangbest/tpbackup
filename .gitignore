@@ -1,0 +1,21 @@
+# 运行数据（任务配置、云盘 token、日志）——绝对不能进仓库
+data/
+health/
+
+# 本地凭据（从 api.conf.example 复制出来的真文件）
+api.conf
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 编辑器与系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 备份残留
+*.bak-*
+*.old

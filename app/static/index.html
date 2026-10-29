@@ -1,0 +1,1414 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#ffffff" id="metaTheme">
+<title>备份管理台</title>
+<script>
+/* 主题在 CSS 解析前定型，避免闪白/闪黑。2026-10-28 改版默认浅色。 */
+(function(){
+  var t = null;
+  try{ t = localStorage.getItem('mb-theme'); }catch(e){}
+  if(t !== 'light' && t !== 'dark'){
+    t = (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  }
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
+<style>
+/* ── 2026-10-28 界面改版 ──
+   白底白卡发丝线、单一主色（鲜青）+ 五个任务色、实色图标章、
+   颜色只出现在：图标章 / 图表 / 状态。其余靠排版层级。 */
+:root{
+  --bg:#ffffff; --card:#ffffff;
+  --line:#e9edf2; --line2:#f0f3f7; --hover:#f8fafc;
+  --ink:#111827; --ink2:#6b7280; --ink3:#9ca3af;
+  --accent:#0d9488; --accent-deep:#0f766e; --accent-l:#e6f4f2;
+  --ok:#16a34a; --bad:#dc2626; --warn:#d97706;
+  --rowrun:#effaf7;
+  --footbg:#f6fbfa;
+  color-scheme:light;
+}
+:root[data-theme="dark"]{
+  --bg:#0f1417; --card:#151b20;
+  --line:#262f36; --line2:#1e262c; --hover:#1a2228;
+  --ink:#e9edf1; --ink2:#9aa7b0; --ink3:#5f6d76;
+  --accent:#2dd4bf; --accent-deep:#14b8a6; --accent-l:#0e2a28;
+  --ok:#4ade80; --bad:#f87171; --warn:#fbbf24;
+  --rowrun:#12262b;
+  --footbg:#12232a;
+  color-scheme:dark;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+*{scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+html{-webkit-font-smoothing:antialiased}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--bg);color:var(--ink);font-size:14px;line-height:1.75;
+  transition:background-color .25s ease,color .25s ease;padding-bottom:64px}
+.wrap{max-width:1180px;margin:0 auto;padding:0 26px 48px}
+
+/* ── 顶栏 ── */
+.appbar{border-bottom:1px solid var(--line);position:sticky;top:0;z-index:40;
+  background:var(--bg);transition:background-color .25s ease,border-color .25s ease}
+.appbar-in{max-width:1180px;margin:0 auto;padding:14px 26px;display:flex;align-items:center;gap:14px}
+.brand{display:flex;align-items:center;gap:12px}
+.brand .mk{width:38px;height:38px;border-radius:11px;background:var(--accent);color:#fff;
+  display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+:root[data-theme="dark"] .brand .mk{color:#052e2a}
+.brand .mk svg{width:20px;height:20px}
+.brand h1{font-size:17px;font-weight:650;letter-spacing:.02em;line-height:1.3}
+.brand .sub{font-size:10.5px;color:var(--ink3);letter-spacing:.14em;margin-top:1px}
+.appbar .spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink2);
+  border:1px solid var(--line);border-radius:20px;padding:5px 14px;white-space:nowrap}
+.pill i{width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block}
+.pill.bad i{background:var(--bad)}
+
+/* ── 按钮 ── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;font-family:inherit;
+  font-size:13px;font-weight:520;border-radius:9px;padding:7px 16px;white-space:nowrap;
+  border:1px solid transparent;transition:background .12s,border-color .12s,opacity .12s,transform .06s}
+.btn:active{transform:translateY(1px)}
+.btn svg{width:15px;height:15px;flex:0 0 auto}
+.btn.primary{background:var(--accent);color:#fff;box-shadow:0 1px 2px rgba(13,148,136,.28)}
+:root[data-theme="dark"] .btn.primary{color:#052e2a}
+.btn.primary:hover{background:var(--accent-deep)}
+:root[data-theme="dark"] .btn.primary:hover{background:var(--accent)}
+.btn.ghost{background:transparent;color:var(--ink2);border-color:var(--line)}
+.btn.ghost:hover{color:var(--ink);border-color:var(--ink3)}
+.btn.busy{opacity:.5;pointer-events:none}
+.btn.busy svg{animation:rot .8s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+
+/* ── KPI 卡：白卡 + 实色图标章 ── */
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin:24px 0 22px}
+@media(max-width:1080px){.kpis{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:680px){.kpis{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:17px 18px;min-width:0;
+  display:flex;gap:13px;align-items:flex-start;transition:border-color .25s ease}
+.kpi .chip{width:42px;height:42px;border-radius:12px;flex:0 0 auto;
+  display:flex;align-items:center;justify-content:center;color:#fff}
+.kpi .chip svg{width:20px;height:20px}
+:root[data-theme="dark"] .kpi .chip{color:#0b1216}
+.kpi .lb{font-size:11.5px;color:var(--ink2);letter-spacing:.06em;line-height:1.4;white-space:nowrap}
+.kpi .vl{font-size:25px;font-weight:660;letter-spacing:-.015em;line-height:1.25;margin-top:2px;
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .vl small{font-size:13px;font-weight:450;color:var(--ink3);margin-left:2px}
+.kpi .vl.warn{color:var(--warn)} .kpi .vl.bad{color:var(--bad)}
+.kpi .vl span.tok-warn{color:var(--warn)} .kpi .vl span.tok-bad{color:var(--bad)}
+.kpi .sb{font-size:11.5px;color:var(--ink3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.5}
+.kpi .sb b{color:var(--ink2);font-weight:500}
+.c1{background:#14b8a6}.c2{background:#3b82f6}.c3{background:#f59e0b}
+.c4{background:#22c55e}.c5{background:#8b5cf6}
+
+/* ── 卡片 ── */
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:18px;overflow:hidden;
+  transition:border-color .25s ease}
+.card-h{display:flex;align-items:baseline;gap:12px;padding:19px 24px 12px;flex-wrap:wrap}
+.card-h h2{font-size:14.5px;font-weight:650;letter-spacing:.02em}
+.card-h h2 i{display:inline-block;width:7px;height:7px;border-radius:2px;background:var(--accent);margin-right:8px;vertical-align:1px}
+.card-h .en{font-size:10px;color:var(--ink3);letter-spacing:.18em;font-weight:500}
+.card-h .chip{font-size:11px;color:var(--ink2);background:var(--hover);border:1px solid var(--line2);
+  border-radius:12px;padding:1px 10px;font-weight:500}
+.card-h .right{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink3)}
+.hint{font-size:11.5px;color:var(--ink3)}
+
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg span{font-size:12px;color:var(--ink2);padding:2px 12px;cursor:pointer;transition:background .12s}
+.seg span.on{background:var(--accent);color:#fff}
+:root[data-theme="dark"] .seg span.on{color:#052e2a}
+.seg span:not(.on):hover{background:var(--hover)}
+
+.grid2{display:grid;grid-template-columns:1fr 330px;gap:18px;align-items:stretch}
+@media(max-width:980px){.grid2{grid-template-columns:1fr}}
+.grid2 .card{margin-bottom:0}
+.grid2{margin-bottom:18px}
+
+/* ── 图表 ── */
+.chart-pad{padding:2px 16px 10px;position:relative}
+/* 上传趋势图：悬停聚焦 + 数据变化时整图轻入（不拿动画保证可见性） */
+#chart .col{transition:opacity .14s}
+#chart.hovering .col:not(.on){opacity:.3}
+@keyframes chartIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+#chart.anim{animation:chartIn .3s ease both}
+
+/* ── 云盘容量条：参照 iPhone「储存空间」——左标题右用量、加粗分段条、圆点图例 ── */
+.quota{margin:0 22px 18px;padding-top:14px;border-top:1px solid var(--line2)}
+.quota .qh{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
+.quota .qh b{font-size:15px;color:var(--ink);font-weight:600;letter-spacing:.01em}
+.quota .qh .pct{margin-left:auto;font-size:13px;color:var(--ink3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.quota .qbar{height:14px;border-radius:7px;background:var(--line2);overflow:hidden}
+.quota .qfill{display:flex;height:100%;overflow:hidden;transition:width .45s cubic-bezier(.22,.9,.24,1)}
+.quota .qfill i{display:block;height:100%}
+.quota .qfill i:hover{filter:brightness(1.12)}
+.quota .ql{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:10px;font-size:12px;color:var(--ink2)}
+.quota .ql span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.quota .ql i{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.quota .ql s{text-decoration:none;color:var(--ink3);font-variant-numeric:tabular-nums}
+.chart-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  color:var(--ink3);font-size:12.5px;pointer-events:none}
+.tip{position:absolute;pointer-events:none;background:#111827;color:#f5f7fa;font-size:11.5px;
+  line-height:1.7;border-radius:9px;padding:8px 12px;opacity:0;transition:opacity .12s;z-index:5;
+  box-shadow:0 6px 18px rgba(17,24,39,.2);white-space:nowrap}
+:root[data-theme="dark"] .tip{background:#e9edf1;color:#111827}
+:root[data-theme="dark"] .tip .d{color:#4b5563}
+.tip b{font-weight:600}
+.tip .d{color:#9fb0c7;letter-spacing:.06em;font-size:10.5px}
+.tip i{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:6px}
+
+/* ── 各任务近况 ── */
+.mini{display:flex;align-items:center;gap:11px;padding:12px 22px;border-bottom:1px solid var(--line2)}
+.mini:last-child{border-bottom:none}
+.mini .dot{width:9px;height:9px;border-radius:3px;flex:0 0 auto}
+.mini .nm{font-size:13.5px;font-weight:560}
+.mini .sb{font-size:11.5px;color:var(--ink3);line-height:1.5}
+.mini .val{margin-left:auto;text-align:right;flex:0 0 auto}
+.mini .val .b{font-size:14.5px;font-weight:640;font-variant-numeric:tabular-nums;white-space:nowrap}
+.mini .val .s{font-size:11px;color:var(--ink3);white-space:nowrap}
+
+/* ── 状态：圆点 + 文字 ── */
+.st{display:inline-block;font-size:12px;letter-spacing:.02em;white-space:nowrap}
+.st.ok{color:var(--ok)} .st.bad{color:var(--bad)} .st.warn{color:var(--warn)} .st.run{color:var(--accent)}
+.st.none{color:var(--ink3)}
+.st i{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:5px;vertical-align:1px}
+.st.ok i{background:var(--ok)} .st.bad i{background:var(--bad)} .st.warn i{background:var(--warn)}
+.st.none i{background:var(--ink3)}
+.st.run i{background:var(--accent);animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* ── 表格：只有横线 ── */
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:680px}
+th{text-align:left;padding:9px 11px;font-size:11px;font-weight:560;color:var(--ink3);
+  letter-spacing:.1em;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:12px 11px;border-bottom:1px solid var(--line2);color:var(--ink2);vertical-align:middle}
+th:first-child,td:first-child{padding-left:22px}
+th:last-child,td:last-child{padding-right:22px}
+tr:last-child td{border-bottom:none}
+tbody tr{transition:background .12s}
+tbody tr:hover{background:var(--hover)}
+tr.row-run{background:var(--rowrun)}
+tr.row-run:hover{background:var(--rowrun)}
+td b{color:var(--ink);font-weight:560}
+th.num,td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+th.num,td.num{padding-left:9px;padding-right:9px}
+td.num{font-size:12.5px;color:var(--ink);font-weight:530}
+/* 单元格主行 + 次行（本地路径 / 下次运行） */
+.cellmain{white-space:nowrap}
+.cellsub{font-size:11px;color:var(--ink3);line-height:1.6;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;max-width:230px}
+.cellsub.mono{font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:11px}
+.cellsub.path{max-width:180px}
+td.path{max-width:146px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:11.5px}
+td.c-act{white-space:nowrap;text-align:right}
+.mono{font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:12px}
+.muted{color:var(--ink3)}
+.tbadge{display:inline-block;font-size:10px;color:var(--ink2);background:var(--hover);
+  border:1px solid var(--line2);border-radius:5px;padding:0 6px;vertical-align:1px;white-space:nowrap}
+
+/* 数据刷新行级淡入 */
+@keyframes rowin{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+tbody.in>tr{animation:rowin .26s ease both}
+
+.actions{display:flex;gap:0;flex-wrap:nowrap;align-items:center;justify-content:flex-end;white-space:nowrap}
+.lnk{display:inline-flex;align-items:center;gap:3px;flex:0 0 auto;
+  font-size:12px;color:var(--accent-deep);cursor:pointer;padding:2px 5px;border-radius:5px;
+  white-space:nowrap;transition:background .12s}
+.lnk svg{flex:0 0 auto}
+:root[data-theme="dark"] .lnk{color:var(--accent)}
+.lnk:hover{background:var(--accent-l)}
+.lnk.danger{color:var(--bad)}
+.lnk.danger:hover{background:rgba(220,38,38,.08)}
+
+/* 口径说明：左竖条 + 极浅底 */
+.footnote{margin:14px 24px 18px;font-size:12.5px;color:var(--ink2);line-height:1.9;
+  border-left:3px solid var(--accent);background:var(--footbg);padding:10px 16px;border-radius:0 8px 8px 0;
+  transition:background-color .25s ease}
+.footnote b{color:var(--ink);font-weight:560}
+.footnote p+p{margin-top:4px}
+
+.empty{padding:42px 20px;text-align:center;color:var(--ink3);font-size:13px}
+.empty svg{width:34px;height:34px;color:var(--line);display:block;margin:0 auto 10px}
+
+/* ── 失败归类小标 ── */
+.kind{display:inline-block;font-size:10.5px;padding:0 6px;border-radius:4px;margin-left:6px;
+  background:rgba(220,38,38,.08);color:var(--bad);white-space:nowrap;vertical-align:1px}
+
+/* ── 各任务云端占用 ── */
+.quse{margin-top:13px;border-top:1px solid var(--line2);padding-top:11px}
+.quse .qh{font-size:11.5px;color:var(--ink3);margin-bottom:6px;display:flex;align-items:baseline;gap:8px}
+.quse .qh b{color:var(--ink2);font-weight:520}
+.quse .qi{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2);padding:2.5px 0}
+.quse .qi .nm{flex:0 0 100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink2)}
+.quse .qi .bar{flex:1;height:5px;border-radius:3px;background:var(--line2);overflow:hidden;min-width:36px}
+.quse .qi .bar i{display:block;height:100%;border-radius:3px;transition:width .5s cubic-bezier(.22,.9,.24,1)}
+.quse .qi .vl{flex:0 0 auto;font-variant-numeric:tabular-nums;color:var(--ink);font-size:11.5px}
+.quse .qfoot{margin-top:7px;font-size:11.5px;color:var(--ink3)}
+
+/* ── 窄屏：任务表改成卡片 ── */
+.tblwrap{overflow-x:auto}
+@media(max-width:760px){
+  table.tasks{min-width:0}
+  table.tasks thead{display:none}
+  table.tasks tbody tr{display:block;padding:13px 16px;border-bottom:1px solid var(--line2)}
+  table.tasks tbody tr:hover{background:transparent}
+  table.tasks td{display:flex;align-items:baseline;justify-content:space-between;gap:14px;
+    border:0;padding:2px 0;text-align:left;flex-wrap:wrap}
+  table.tasks td::before{content:attr(data-label);color:var(--ink3);font-size:11.5px;flex:0 0 auto}
+  table.tasks td:first-child{display:block;padding-bottom:7px}
+  table.tasks td:first-child::before{display:none}
+  table.tasks td.c-act{justify-content:flex-end;padding-top:9px}
+  table.tasks td.c-act::before{display:none}
+  table.tasks .cellmain{flex:1;text-align:right}
+  table.tasks .cellsub{flex:1 0 100%;text-align:right;max-width:none}
+  table.tasks td.path{max-width:none}
+  table.tasks td:first-child .cellmain,
+  table.tasks td:first-child .cellsub{text-align:left;flex:none}
+  table.tasks td.num{font-weight:560}
+}
+
+/* ── 运行时间轴 ── */
+.tl{padding:14px 22px 18px}
+.tlrow{display:flex;align-items:center;gap:14px;padding:5px 0}
+.tlname{flex:0 0 96px;font-size:12px;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tlcells{display:flex;gap:3px;flex-wrap:wrap}
+.tlcells i{width:13px;height:18px;border-radius:3px;background:var(--line2);cursor:pointer;
+  transition:transform .1s}
+.tlcells i:hover{transform:translateY(-2px)}
+.tlcells i.ok{background:var(--ok)}
+.tlcells i.bad{background:var(--bad)}
+.tlcells i.warn{background:var(--warn)}
+.tlcells i.run{background:var(--accent)}
+.tlleg{display:flex;gap:16px;margin-top:10px;font-size:11.5px;color:var(--ink3)}
+.tlleg span{display:inline-flex;align-items:center;gap:6px}
+.tlleg s{display:inline-block;width:11px;height:11px;border-radius:3px;text-decoration:none}
+
+.kv{display:flex;gap:14px;padding:8px 0;border-bottom:1px solid var(--line2);font-size:13px}
+.kv:last-child{border-bottom:none}
+.kv .k{flex:0 0 92px;color:var(--ink3);font-size:12px;padding-top:1px}
+.kv .v{flex:1;color:var(--ink);word-break:break-all;line-height:1.6}
+.kv .v.mono{font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:12px}
+
+/* ── 弹窗 ── */
+.mask{position:fixed;inset:0;background:rgba(17,24,39,.45);display:none;align-items:center;
+  justify-content:center;z-index:50;padding:20px;backdrop-filter:blur(3px)}
+.mask.on{display:flex}
+.modal{background:var(--card);border:1px solid var(--line);border-radius:14px;width:100%;
+  max-width:720px;max-height:90vh;overflow:auto;animation:pop .18s ease both}
+@keyframes pop{from{opacity:0;transform:scale(.97) translateY(8px)}to{opacity:1;transform:none}}
+.modal-h{display:flex;align-items:center;justify-content:space-between;padding:16px 22px 12px;
+  position:sticky;top:0;background:var(--card);z-index:2;border-bottom:1px solid var(--line2)}
+.modal-h h3{font-size:15px;font-weight:650}
+.modal-b{padding:8px 22px 20px}
+.modal-f{padding:12px 22px 16px;display:flex;justify-content:flex-end;gap:8px;
+  position:sticky;bottom:0;background:var(--card);border-top:1px solid var(--line2)}
+.field{margin-bottom:15px}
+.field label{display:block;font-size:12px;font-weight:560;color:var(--ink2);margin-bottom:6px}
+.field input,.field textarea,.field select{width:100%;padding:8px 12px;border:1px solid var(--line);border-radius:8px;
+  font-size:13px;font-family:inherit;color:var(--ink);background:var(--bg);transition:border-color .12s,box-shadow .12s}
+.field input:focus,.field textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-l)}
+.field select{cursor:pointer}
+.field .hint{margin-top:5px}
+.grid2f{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:640px){.grid2f{grid-template-columns:1fr}}
+.cronrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+.cronrow select,.cronrow input{width:auto}
+.cronrow input[type=time]{width:110px}
+.cronrow input[type=number]{width:82px}
+
+/* 目录浏览器 */
+.browser{border:1px solid var(--line);border-radius:10px;max-height:250px;overflow:auto;background:var(--bg)}
+.browser .bi{display:flex;align-items:center;gap:10px;padding:7px 13px;cursor:pointer;font-size:12.5px;
+  border-bottom:1px solid var(--line2)}
+.browser .bi:hover{background:var(--hover)}
+.browser .bi.sel{background:var(--accent-l)}
+.browser .bi:last-child{border-bottom:none}
+.browser .bi .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.browser .bi .sz{color:var(--ink3);font-size:11px;font-family:ui-monospace,monospace}
+.browser .bi svg{width:16px;height:16px;flex:0 0 auto;color:var(--t3,#f59e0b)}
+.crumb{font-family:ui-monospace,monospace;font-size:11.5px;color:var(--ink2);padding:6px 12px;background:var(--bg);
+  border:1px solid var(--line2);border-radius:7px;margin-bottom:8px;word-break:break-all}
+
+/* 日志：始终终端深底 */
+.logbox{background:#0b1013;color:#c9d4dc;font-family:ui-monospace,"SF Mono",Consolas,monospace;font-size:12px;line-height:1.65;
+  padding:15px 17px;border-radius:10px;border:1px solid var(--line2);max-height:430px;overflow:auto;
+  white-space:pre-wrap;word-break:break-all}
+.progress{height:5px;background:var(--line2);border-radius:4px;overflow:hidden;margin:12px 0}
+.progress>div{height:100%;background:var(--accent);width:0;transition:width .3s;position:relative;overflow:hidden}
+.progress>div::after{content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.3),transparent);
+  animation:shimmer 1.4s infinite}
+@keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+
+/* Toast */
+.toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(16px);
+  background:var(--ink);color:var(--bg);padding:10px 20px;border-radius:9px;font-size:13px;
+  opacity:0;transition:.2s;pointer-events:none;z-index:99;box-shadow:0 6px 20px rgba(17,24,39,.25)}
+:root[data-theme="dark"] .toast{background:#e9edf1;color:#111827}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<div class="appbar">
+  <div class="appbar-in">
+    <div class="brand">
+      <div class="mk"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.99 5.99 0 0 0 0 14a6 6 0 0 0 6 6h13a5 5 0 0 0 .35-9.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg></div>
+      <div><h1>备份管理台</h1><div class="sub">BACKUP CONSOLE</div></div>
+    </div>
+    <div class="spacer"></div>
+    <span class="pill" id="sysDot"><i></i><span id="sysTxt">连接中…</span></span>
+    <button class="btn ghost" id="themeBtn" onclick="toggleTheme()" title="切换深浅主题" aria-label="切换主题"></button>
+    <button class="btn ghost" id="btnRefresh" onclick="manualRefresh(this)">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 8 8h-2a6 6 0 1 1-1.76-4.24L13 11h7V4l-2.35 2.35z"/></svg>刷新</button>
+    <button class="btn primary" onclick="openEditor()">＋ 新增备份任务</button>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-h">
+        <h2><i></i>上传趋势</h2><span class="en">TRANSFER TREND</span>
+        <div class="right">
+          <div class="seg" id="segDays">
+            <span data-d="7" onclick="setDays(7)">7 天</span><span data-d="14" class="on" onclick="setDays(14)">14 天</span><span data-d="30" onclick="setDays(30)">30 天</span>
+          </div>
+        </div>
+      </div>
+      <div class="chart-pad" id="chartPad">
+        <svg id="chart" viewBox="0 0 760 250" style="width:100%;display:block"></svg>
+        <div class="tip" id="tip"></div>
+      </div>
+      <div class="quota" id="quotaBox"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><h2><i></i>各任务近况</h2><span class="en">TASKS</span></div>
+      <div id="taskMini"><div class="empty">加载中…</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">
+      <h2><i></i>备份任务</h2><span class="chip" id="taskCount">…</span><span class="en">TASKS &amp; VOLUME</span>
+      <div class="right">
+        <span class="hint">有任务运行时每 5 秒自动更新，空闲每 5 分钟巡检</span>
+      </div>
+    </div>
+    <div class="tblwrap">
+      <table class="tasks">
+        <thead><tr>
+          <th>任务 / 本地路径</th><th>云端路径</th><th>调度</th>
+          <th class="num">今日</th><th class="num">本月</th><th class="num">累计</th>
+          <th>上次运行</th><th style="text-align:right">操作</th>
+        </tr></thead>
+        <tbody id="taskBody"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="footnote">
+      <p><b>统计口径</b>：只计「成功」状态的实际传输量，预览、失败、中断不计入；显示 0 表示增量比对后云端已是最新，无新文件需要上传。<b>「累计」自本管理台首次运行起算</b>，之前由其他方式上传的历史量不在其中。</p>
+      <p><b>预览</b>（眼睛/预览按钮）：只扫描比对、列出将要上传的文件，<b>不传输任何内容</b>，新建或改动任务后建议先预览一次。标「脚本推送」的任务由 NAS 上的脚本定时打包后交给本应用上传，所以操作里没有「立即备份」。</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">
+      <h2><i></i>历史记录</h2><span class="chip" id="runCount">…</span><span class="en">HISTORY</span>
+      <div class="right">
+        <div class="seg" id="runSeg">
+          <span data-v="table" class="on" onclick="setRunView('table')">表格</span><span data-v="tl" onclick="setRunView('tl')">时间轴</span>
+        </div>
+      </div>
+    </div>
+    <div class="tblwrap">
+      <table class="runs">
+        <thead><tr>
+          <th>时间</th><th>任务</th><th>结果</th><th class="num">文件 待/成/败</th>
+          <th class="num">传输量</th><th class="num">速率</th><th class="num">耗时</th><th style="width:56px">操作</th>
+        </tr></thead>
+        <tbody id="runBody"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="tl" id="timeline" style="display:none"></div>
+  </div>
+</main>
+
+<!-- 编辑任务 -->
+<div class="mask" id="editMask">
+  <div class="modal">
+    <div class="modal-h">
+      <h3 id="editTitle">新增备份任务</h3>
+      <button class="btn ghost" onclick="closeEditor()">关闭</button>
+    </div>
+    <div class="modal-b">
+      <input type="hidden" id="f_id">
+      <div class="grid2f">
+        <div class="field">
+          <label>任务名称</label>
+          <input id="f_name" placeholder="例如：文档备份">
+        </div>
+        <div class="field">
+          <label>云端路径（用 / 分隔）</label>
+          <input id="f_cloud" placeholder="例如：DocBackup">
+          <div class="hint">云端不存在会自动创建</div>
+        </div>
+      </div>
+      <div class="field">
+        <label>源目录</label>
+        <input id="f_src" placeholder="点下方浏览选择，或直接粘贴路径">
+        <div class="crumb" id="browsePath" style="display:none"></div>
+        <div class="browser" id="browser"></div>
+        <div class="hint" id="rootHint">范围由服务端 TP_ALLOWED_ROOTS 限定</div>
+      </div>
+      <div class="grid2f">
+        <div class="field">
+          <label>定时规则</label>
+          <div class="cronrow">
+            <select id="f_cfreq">
+              <option value="">不自动（只手动）</option>
+              <option value="daily">每天</option>
+              <option value="weekly">每周</option>
+              <option value="monthly">每月</option>
+              <option value="custom">自定义 cron</option>
+            </select>
+            <input id="f_ctime" type="time" value="04:40">
+            <select id="f_cdow" style="display:none">
+              <option value="1">周一</option><option value="2">周二</option>
+              <option value="3">周三</option><option value="4">周四</option>
+              <option value="5">周五</option><option value="6">周六</option>
+              <option value="0">周日</option>
+            </select>
+            <input id="f_cdom" type="number" min="1" max="31" value="1" style="display:none">
+          </div>
+          <input id="f_cron" placeholder="40 4 * * *">
+          <div class="hint" id="f_cronhint">留空则只手动运行</div>
+        </div>
+        <div class="field">
+          <label>并发数</label>
+          <input id="f_workers" type="number" value="4" min="1" max="8">
+          <div class="hint">默认 4，过大易触发云盘频控</div>
+        </div>
+      </div>
+      <div class="field">
+        <label>排除的目录 / 文件（每行一个，支持通配符）</label>
+        <textarea id="f_excludes" rows="3" placeholder="thumbs&#10;*.tmp&#10;#recycle"></textarea>
+      </div>
+      <div class="field">
+        <label>备注</label>
+        <input id="f_note" placeholder="可选">
+      </div>
+    </div>
+    <div class="modal-f">
+      <button class="btn ghost" onclick="closeEditor()">取消</button>
+      <button class="btn primary" onclick="saveTask()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 日志 -->
+<div class="mask" id="logMask">
+  <div class="modal" style="max-width:880px">
+    <div class="modal-h">
+      <h3 id="logTitle">运行日志</h3>
+      <button class="btn ghost" onclick="closeLog()">关闭</button>
+    </div>
+    <div class="modal-b">
+      <div id="logProgress" style="display:none">
+        <div class="progress"><div id="logBar"></div></div>
+        <div class="hint" id="logStat"></div>
+      </div>
+      <div class="logbox" id="logBox">—</div>
+    </div>
+  </div>
+</div>
+
+<!-- 备份详情 / 保险单 -->
+<div class="mask" id="cardMask">
+  <div class="modal" style="max-width:640px">
+    <div class="modal-h">
+      <h3 id="cardTitle">备份详情</h3>
+      <button class="btn ghost" onclick="closeCard()">关闭</button>
+    </div>
+    <div class="modal-b" id="cardBody"></div>
+    <div class="modal-f">
+      <button class="btn ghost" onclick="copyCard()">复制为文本</button>
+      <button class="btn primary" onclick="closeCard()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let TASKS = [], POLL = null, CUR_LOG = {taskId:null, runId:null};
+let STATS = null, DAYS_N = 14;
+/* 统计查找：渲染时按 task_id 实时取，避免「统计先到 / 任务先到」的时序差 */
+const statsOf = tid => (STATS && STATS.per_task.find(p => p.task_id === tid)) || null;
+
+/* 任务配色：按任务顺序取色，与图表/近况/表格一致 */
+const PALETTE = ['#14b8a6','#3b82f6','#f59e0b','#8b5cf6','#ec4899',
+                 '#0ea5e9','#f97316','#84cc16','#a855f7','#ef4444'];
+const colorOf = tid => {
+  const i = TASKS.findIndex(t => t.id === tid);
+  if (i >= 0) return PALETTE[i % PALETTE.length];
+  /* 任务清单尚未到货时的兜底：按 id 稳定散列取色。
+     否则整图会掉成 PALETTE[0] 一个颜色（2026-10-28 刷新掉色 bug 的根因之一） */
+  return PALETTE[(Number(tid) * 7) % PALETTE.length];
+};
+
+const fmtB = n => {
+  n = Number(n)||0;
+  if (n >= 1099511627776) return (n/1099511627776).toFixed(2)+' TB';
+  if (n >= 1073741824) return (n/1073741824).toFixed(2)+' GB';
+  if (n >= 1048576) return (n/1048576).toFixed(1)+' MB';
+  if (n >= 1024) return (n/1024).toFixed(0)+' KB';
+  return n+' B';
+};
+/* 统计场景：0 就显示「0」，别拖个单位 */
+const fmtB0 = n => (Number(n)||0) > 0 ? fmtB(n) : '0';
+const fmtDur = s => {
+  s = Number(s)||0;
+  if (s >= 3600) return (s/3600).toFixed(1)+' 小时';
+  if (s >= 60) return Math.round(s/60)+' 分'+(Math.round(s%60)?Math.round(s%60)+'秒':'');
+  return Math.round(s)+' 秒';
+};
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/* 本地路径只留尾部，按显示宽度取舍（CJK 记 2），保住末级目录名；全路径在 title 里 */
+const textW = s => [...s].reduce((n,c)=> n + (/[\u2E80-\u9FFF\uFF00-\uFFEF]/.test(c)?2:1), 0);
+const tailPath = p => {
+  if(!p) return '—';
+  if(textW(p) <= 25) return p;
+  const parts = p.split('/').filter(Boolean);
+  let out = '';
+  for(let i = parts.length-1; i >= 0; i--){
+    const next = '/' + parts[i] + out;
+    if(textW(next) > 25 && out) break;
+    out = next;
+  }
+  return '…' + out;
+};
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('on'); setTimeout(()=>t.classList.remove('on'),2400); }
+
+/* 内联图标（离线可用） */
+const ICO = {
+  play:'M8 5v14l11-7z',
+  eye:'M12 4.5C7 4.5 2.7 7.6 1 12c1.7 4.4 6 7.5 11 7.5s9.3-3.1 11-7.5c-1.7-4.4-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
+  history:'M13 3a9 9 0 0 0-9 9H1l3.9 3.9.1.1L9 12H6a7 7 0 1 1 7 7 6.97 6.97 0 0 1-4.95-2.05l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8h-2z',
+  edit:'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z',
+  del:'M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z',
+  stop:'M6 6h12v12H6z',
+  folder:'M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z',
+  doc:'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm4 18H6V4h7v5h5v11z',
+  sun:'M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41L6.34 2.11c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06zm12.37 12.37c-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41l-1.06-1.06c-.39-.39-1.03-.39-1.41 0zm1.06-10.96c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z',
+  moon:'M12.34 2.02C6.59 1.82 2 6.42 2 12c0 5.52 4.48 10 10 10 3.71 0 6.93-2.02 8.66-5.02.33-.57-.15-1.27-.8-1.14-4.62.89-8.98-2.6-8.98-7.34 0-1.86.66-3.63 1.79-5.03.4-.49.06-1.23-.59-1.45z'
+};
+const ico = n => `<svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="${ICO[n]}"/></svg>`;
+
+async function api(path, opt){
+  const r = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, opt||{}));
+  if (r.status === 401) { toast('认证失败，请重新输入账号密码'); throw new Error('401'); }
+  if (!r.ok) { let m='请求失败'; try{ m=(await r.json()).detail||m; }catch(e){} throw new Error(m); }
+  return r.status === 204 ? null : r.json();
+}
+
+const ST_MAP = {success:['ok','成功'], failed:['bad','失败'], running:['run','运行中'],
+                'dry-run':['warn','预览'], stopped:['warn','已停止'], interrupted:['warn','被中断']};
+const statusText = st => (ST_MAP[st] || ['none', st||'—'])[1];
+const stHtml = (st, extra) => `<span class="st ${(ST_MAP[st]||['none'])[0]}"><i></i>${esc(statusText(st))}${extra||''}</span>`;
+
+/* ── KPI ── */
+const KPI_GLYPH = {
+  up:'M12 4l-7 7h4v9h6v-9h4z',
+  cal:'M19 4h-1V2h-2v2H8V2H6v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 16H5V10h14zM5 8V6h14v2z',
+  cloud:'M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.99 5.99 0 0 0 0 14a6 6 0 0 0 6 6h13a5 5 0 0 0 .35-9.96z',
+  ok:'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-2 15-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z',
+  key:'M12.65 10A6 6 0 1 0 12.65 14H17v4h4v-4h1v-4zM7 14a2 2 0 1 1 0-4 2 2 0 0 1 0 4z'
+};
+const kpiCard = (cls, glyph, lb, vl, small, sb) => `
+  <div class="kpi"><div class="chip ${cls}"><svg viewBox="0 0 24 24" fill="currentColor"><path d="${KPI_GLYPH[glyph]}"/></svg></div>
+  <div style="min-width:0"><div class="lb">${lb}</div>
+  <div class="vl">${vl}${small?`<small>${small}</small>`:''}</div>
+  <div class="sb">${sb}</div></div></div>`;
+
+/* ── 云盘容量（按类别分段的横版容量条）── */
+let QUOTA = null, QUOTA_AT = 0;
+/* iOS「储存空间」同款配色：红/橙/黄/绿/灰 */
+const QUOTA_CATS = [
+  ['video', '视频', '#ff3b30'],
+  ['image', '图片', '#ff9f0a'],
+  ['other', '其他', '#ffd60a'],
+  ['audio', '音频', '#30d158'],
+  ['text', '文本', '#8e8e93'],
+];
+const fmtTotal = v => fmtB(v).replace(/\.00 /, ' ');
+async function loadQuota(force){
+  /* 后端已有 5 分钟缓存，前端再挡一层防轮询打爆云端接口。
+     注意：只有成功才缓存 5 分钟；失败 30 秒后就允许重试，
+     否则一次瞬时失败会被钉死 5 分钟（2026-10-28 实测踩到）。 */
+  const ttl = (QUOTA && QUOTA.ok) ? 300000 : 30000;
+  if (!force && QUOTA && Date.now() - QUOTA_AT < ttl) return;
+  try { QUOTA = await api('/api/stats/storage' + (force ? '?force=1' : '')); }
+  catch(e){
+    const m = /fetch|NetworkError|Load failed|credentials/i.test(e.message) ? '暂时连不上云端，稍后自动重试' : e.message;
+    QUOTA = {ok: false, error: m};
+  }
+  QUOTA_AT = Date.now();
+  renderQuota();
+}
+function renderQuota(){
+  const box = $('quotaBox');
+  const q = QUOTA;
+  if (!q){ box.innerHTML = '<div class="qh">云盘容量</div>'; return; }
+  if (!q.ok){
+    box.innerHTML = `<div class="qh">云盘容量<span class="pct">${q.stale ? '显示上次数据' : '查询失败'}</span></div>
+      <div class="ql">${esc(q.error || '云端接口暂不可用')}</div>` + cloudBlock();
+    return;
+  }
+  const used = q.used || 0, total = q.total || 0, free = q.free || 0, pct = q.pct || 0;
+  const cats = QUOTA_CATS.map(([k, name, c]) => ({name, c, v: (q.cat || {})[k] || 0}))
+                         .filter(x => x.v > 0)
+                         .sort((a, b) => b.v - a.v);
+  const sumCat = cats.reduce((a, x) => a + x.v, 0) || 1;
+  /* 段与段紧贴、按占比 flex 分配（参照 iPhone：色块相邻，无缝隙） */
+  const segs = cats.map(x =>
+    `<i style="flex:${x.v};background:${x.c}" title="${x.name} ${fmtB(x.v)}"></i>`).join('');
+  const legend = cats.map(x =>
+    `<span><i style="background:${x.c}"></i>${x.name}<s>${fmtB(x.v)}</s></span>`).join('') +
+    `<span><i style="background:var(--line2)"></i>未使用<s>${fmtB(free)}</s></span>`;
+  box.innerHTML = `
+    <div class="qh"><b>联通云盘</b>
+      <span class="pct">已使用 ${fmtB(used)} / ${fmtTotal(total)}</span></div>
+    <div class="qbar"><div class="qfill" style="width:${Math.max(pct, 0.8)}%">${segs}</div></div>
+    <div class="ql">${legend}</div>` + cloudBlock();
+}
+
+/* ── 各任务云端占用（/api/stats/cloud）── */
+let CLOUD = null, CLOUD_AT = 0;
+async function loadCloud(force){
+  if (!force && CLOUD && Date.now() - CLOUD_AT < 1800000) return;
+  try { CLOUD = await api('/api/stats/cloud' + (force ? '?force=1' : '')); }
+  catch(e){ CLOUD = { tasks: [], error: e.message }; }
+  CLOUD_AT = Date.now();
+  renderQuota();
+}
+function cloudBlock(){
+  if (!CLOUD) return '';
+  if (!(CLOUD.tasks || []).length){
+    return CLOUD.computing ? '<div class="quse"><div class="qh"><b>各任务占用</b><span>首次统计中，约需 1 分钟…</span></div></div>' : '';
+  }
+  const rows = CLOUD.tasks.filter(t => t.bytes != null).sort((a, b) => b.bytes - a.bytes);
+  if (!rows.length) return '';
+  const denom = Math.max(CLOUD.total_bytes || 0, ...rows.map(r => r.bytes), 1);
+  const items = rows.map(r => `<div class="qi">
+      <span class="nm" title="${esc(r.cloud || '')}">${esc(r.name)}</span>
+      <span class="bar"><i style="width:${Math.max(r.bytes / denom * 100, 1.5)}%;background:${colorOf(r.task_id)}"></i></span>
+      <span class="vl">${fmtB(r.bytes)}</span></div>`).join('');
+  const g = CLOUD.growth || {};
+  let foot;
+  if (g.days_to_full != null && g.days_to_full < 3650) foot = `近 30 天平均 ${fmtB(g.bytes_per_day)}/天，约 ${g.days_to_full} 天填满`;
+  else if (g.bytes_per_day) foot = `近 30 天平均 ${fmtB(g.bytes_per_day)}/天 · 按此速度 10 年内不会满`;
+  else foot = '近 30 天没有新增数据';
+  const stamp = CLOUD.computing ? '更新中…（沿用上次结果）' : (CLOUD.at || '');
+  const tot = CLOUD.total_bytes || 0;
+  const usedAll = (QUOTA && QUOTA.ok) ? QUOTA.used : 0;
+  const share = usedAll ? (tot / usedAll * 100).toFixed(1) + '%' : '';
+  return `<div class="quse"><div class="qh"><b>备份占用 ${fmtB(tot)}</b><span>${share ? '占云盘已用 ' + share + ' · ' : ''}${esc(stamp)}</span></div>
+    ${items}<div class="qfoot">${foot}</div></div>`;
+}
+
+async function loadOverview(){
+  try{
+    const o = await api('/api/overview');
+    $('sysTxt').textContent = '服务运行中';
+    $('sysDot').classList.remove('bad');
+    window.OV = o;
+  }catch(e){
+    $('sysTxt').textContent = '连接失败';
+    $('sysDot').classList.add('bad');
+    throw e;
+  }
+  renderKpis();
+}
+
+function renderKpis(){
+  const o = window.OV || {};
+  const tk = o.token || {};
+  const tcls = tk.remain_days == null ? '' : (tk.remain_days < 2 ? 'tok-bad' : (tk.remain_days < 4 ? 'tok-warn' : ''));
+  const st = STATS ? STATS.totals : null;
+  const filesSub = st ? `${st.today_files} 个文件 · ${st.runs_today} 次成功运行` : '…';
+  const sinceSub = st ? (st.since ? `自 ${esc(st.since)} 接管起` : '暂无数据') : '…';
+  $('kpis').innerHTML =
+    kpiCard('c1','up','今日上传', st?fmtB(st.today_bytes):'…','' , filesSub) +
+    kpiCard('c2','cal','本月至今', st?fmtB(st.month_bytes):'…','','自然月累计') +
+    kpiCard('c5','cloud','累计上传', st?fmtB(st.total_bytes):'…','', sinceSub) +
+    kpiCard('c4','ok','今日运行', `${o.ok_today ?? '…'}`,
+      (o.fail_today ? ' / '+o.fail_today+' 失败' : ''),
+      `上次成功 ${o.last_success?esc(String(o.last_success).slice(11,16)):'—'}`) +
+    kpiCard('c3','key','Token 剩余',
+      tk.remain_days==null?'—':`<span class="${tcls}">${tk.remain_days}</span>`,
+      ' 天',
+      tk.updated?('签发 '+esc(tk.updated.slice(5,16))):'未初始化');
+}
+
+/* ── 统计 + 图表 ── */
+async function loadStats(){
+  STATS = await api('/api/stats/transfer?days='+DAYS_N);
+  renderKpis();
+  renderChart();
+  /* 统计到货后重刷近况和表格统计列。渲染函数内部用 statsOf 实时取数，
+     谁先到都能收敛，不需要重新请求任务列表。 */
+  renderMini();
+  if (TASKS.length) renderTasks(false);
+}
+
+function setDays(n){
+  DAYS_N = n;
+  document.querySelectorAll('#segDays span').forEach(s =>
+    s.classList.toggle('on', Number(s.dataset.d) === n));
+  loadStats().catch(()=>{});
+}
+
+function axisFmt(v){
+  if (v >= 1073741824) { const g=v/1073741824; return (g>=10?g.toFixed(0):g.toFixed(1))+'G'; }
+  if (v >= 1048576) { const m=v/1048576; return (m>=100?m.toFixed(0):m.toFixed(0))+'M'; }
+  if (v >= 1024) return (v/1024).toFixed(0)+'K';
+  return v>0 ? '1' : '0';
+}
+
+let CHART_SIG = '';
+/* 与白色混合：给柱子渐变做顶部提亮 */
+const mixW = (hex, t) => {
+  const n = parseInt(hex.slice(1), 16), r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const f = c => Math.round(c + (255 - c) * t);
+  return `rgb(${f(r)},${f(g)},${f(b)})`;
+};
+/* 把数值收敛到 1/2/2.5/5/10×10^n，让轴刻度落在整数上 */
+function tidyStep(v){
+  if (v <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const m = v / p;
+  const s = m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10;
+  return s * p;
+}
+
+/* 轴刻度用十进制单位（1G=1000M），配合取整步长让刻度落在整数上 */
+function axisTick(v){
+  if (v >= 1e9) { const g = v/1e9; return (g % 1 ? g.toFixed(1) : g.toFixed(0)) + 'G'; }
+  if (v >= 1e6) { const m = v/1e6; return (m % 1 ? m.toFixed(1) : m.toFixed(0)) + 'M'; }
+  if (v >= 1e3) { const k = v/1e3; return (k % 1 ? k.toFixed(1) : k.toFixed(0)) + 'K'; }
+  return String(Math.round(v));
+}
+
+function renderChart(){
+  const svg = $('chart'), tip = $('tip');
+  const daily = (STATS && STATS.daily) || [];
+  const W=760,H=250,padL=54,padR=14,padT=20,padB=26;
+  const iw=W-padL-padR, ih=H-padT-padB;
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const axis = dark ? '#5f6d76' : '#9ca3af';
+  const track = dark ? 'rgba(148,163,184,.075)' : 'rgba(100,116,139,.075)';
+  const gridC = dark ? 'rgba(148,163,184,.16)' : 'rgba(100,116,139,.16)';
+  const accentTxt = dark ? '#2dd4bf' : '#0d9488';
+  const TODAY = new Date(Date.now() - new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
+
+  /* 优雅刻度：步长取整，柱顶尽量顶满但留 6% 呼吸 */
+  const rawMax = Math.max(1, ...daily.map(d=>d.total||0));
+  const stepV = tidyStep(rawMax / 4);
+  const max = stepV * Math.max(3, Math.ceil(rawMax * 1.06 / stepV));
+  const nT = Math.round(max / stepV);
+
+  const bw = iw / Math.max(daily.length, 1);
+  const barW = Math.min(34, Math.max(bw * 0.5, 4));
+  const y = v => padT + ih - (v / max) * ih;
+
+  /* 数据指纹：只有数据变了才播放入场动画，轮询刷新不闪烁 */
+  const sig = DAYS_N + '|' + daily.map(d => (d.date||'') + ':' + (d.total||0)).join(',');
+  const anim = sig !== CHART_SIG; CHART_SIG = sig;
+
+  /* 每色一枚竖向渐变（顶部提亮 26%），柱体更有体积感 */
+  let s = '<defs>';
+  PALETTE.forEach((c, i) => {
+    s += `<linearGradient id="pg${i}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${mixW(c, .26)}"/><stop offset="1" stop-color="${c}"/></linearGradient>`;
+  });
+  s += '</defs>';
+
+  /* 网格：0 基线实线，其余细虚线 */
+  for (let g = 0; g <= nT; g++){
+    const yy = y(stepV * g);
+    s += `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W-padR}" y2="${yy.toFixed(1)}"
+      stroke="${gridC}" stroke-width="1" ${g ? 'stroke-dasharray="3 5"' : ''}/>`;
+    s += `<text x="${padL-10}" y="${(yy+3.5).toFixed(1)}" text-anchor="end" font-size="10"
+      fill="${axis}" style="font-variant-numeric:tabular-nums">${g ? axisTick(stepV*g) : '0'}</text>`;
+  }
+
+  const labelEvery = Math.max(1, Math.ceil(daily.length / 8));
+  let anyData = false;
+  daily.forEach((d, i) => {
+    const cx = padL + i*bw + bw/2, x = cx - barW/2;
+    const date = d.date || '';
+    const isToday = date === TODAY;
+    /* 今天：竖向浅色带，一眼定位"现在" */
+    if (isToday) s += `<rect x="${(padL+i*bw+1.5).toFixed(1)}" y="${padT}"
+      width="${Math.max(bw-3, 4).toFixed(1)}" height="${ih}" rx="8"
+      fill="${dark ? 'rgba(45,212,191,.07)' : 'rgba(13,148,136,.06)'}"/>`;
+    /* 轨道：满高浅底，柱子的"跑道" */
+    s += `<rect x="${x.toFixed(1)}" y="${padT}" width="${barW.toFixed(1)}" height="${ih}"
+      rx="${Math.min(4, barW/2).toFixed(1)}" fill="${track}"/>`;
+
+    const entries = Object.entries(d.by_task||{}).filter(([, v]) => Number(v) > 0);
+    entries.sort((a, b) => {
+      const ia = TASKS.findIndex(t => t.id === Number(a[0])), ib = TASKS.findIndex(t => t.id === Number(b[0]));
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    let acc = 0, segs = '';
+    entries.forEach(([tidStr, v], si) => {
+      v = Number(v) || 0; anyData = true;
+      const y1 = y(acc), y2 = y(acc + v);
+      const gapPx = si < entries.length - 1 ? 2 : 0;     /* 段间 2px 呼吸缝 */
+      const h = Math.max(y1 - y2 - gapPx, 1.5);
+      const ci = Math.max(0, PALETTE.indexOf(colorOf(Number(tidStr))));
+      segs += `<rect x="${x.toFixed(1)}" y="${y2.toFixed(1)}" width="${barW.toFixed(1)}"
+        height="${h.toFixed(1)}" rx="${Math.min(3, barW/2).toFixed(1)}"
+        fill="url(#pg${ci})"><title>${esc(date)}</title></rect>`;
+      acc += v;
+    });
+    if (segs) s += `<g class="col" data-i="${i}">${segs}</g>`;
+    /* 今天柱顶标总量 */
+    if (isToday && (d.total||0) > 0){
+      s += `<text x="${cx.toFixed(1)}" y="${(y(d.total) - 6).toFixed(1)}" text-anchor="middle"
+        font-size="10.5" font-weight="600" fill="${accentTxt}">${axisTick(d.total)}</text>`;
+    }
+    /* x 轴标签：稠密时抽稀，今天单独标出 */
+    if (isToday || i % labelEvery === 0 || i === daily.length - 1){
+      s += `<text x="${cx.toFixed(1)}" y="${H-6}" text-anchor="middle" font-size="9.5"
+        fill="${isToday ? accentTxt : axis}" ${isToday ? 'font-weight="600"' : ''}>${isToday ? '今天' : date.slice(8)}</text>`;
+    }
+  });
+  s += `<line id="guide" x1="0" y1="${padT}" x2="0" y2="${padT+ih}" stroke="${axis}"
+    stroke-width="1" stroke-dasharray="3 4" style="opacity:0;transition:opacity .12s"/>`;
+  if (!anyData) s += `<text x="${padL+iw/2}" y="${padT+ih/2}" text-anchor="middle" font-size="12.5"
+    fill="${axis}">统计期内暂无上传（增量比对后无新文件属正常）</text>`;
+  svg.innerHTML = s;
+
+  /* 悬停热区 + 明细浮层 + 聚焦（其余列淡出） */
+  let hot = '';
+  daily.forEach((d, i) => {
+    hot += `<rect x="${(padL+i*bw).toFixed(1)}" y="${padT}" width="${bw.toFixed(1)}" height="${ih}"
+      fill="transparent" style="cursor:crosshair"
+      onmouseenter="showTip(${i},event)" onmousemove="showTip(${i},event)" onmouseleave="hideTip()"/>`;
+  });
+  svg.innerHTML += hot;
+  /* 数据变化才播一次整图淡入：柱子本身始终完整高度，不依赖动画 */
+  svg.classList.remove('anim'); void svg.offsetWidth;
+  if (anim) svg.classList.add('anim');
+
+  window.showTip = function(i, ev){
+    const d = daily[i]; if (!d) return;
+    svg.classList.add('hovering');
+    svg.querySelectorAll('g.col').forEach(g => g.classList.toggle('on', Number(g.dataset.i) === i));
+    const gd = svg.querySelector('#guide');
+    if (gd){ const gx = padL + i*bw + bw/2; gd.setAttribute('x1', gx); gd.setAttribute('x2', gx); gd.style.opacity = '1'; }
+    const entries = Object.entries(d.by_task||{}).map(([tid, v]) => ({tid: Number(tid), v: Number(v)||0}))
+      .filter(e => e.v > 0)
+      .sort((a, b) => {
+        const ia = TASKS.findIndex(t => t.id === a.tid), ib = TASKS.findIndex(t => t.id === b.tid);
+        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      });
+    let html = `<div class="d">${esc(d.date)}</div>`;
+    entries.forEach(e => {
+      const t = TASKS.find(t => t.id === e.tid);
+      html += `<div><i style="background:${colorOf(e.tid)}"></i>${esc(t ? t.name : ('#'+e.tid))}　${fmtB(e.v)}</div>`;
+    });
+    if (!entries.length) html += `<div>无上传（云端已最新）</div>`;
+    else html += `<div style="border-top:1px solid ${dark ? '#c8d2da' : '#374151'};margin-top:4px;padding-top:3px"><b>合计 ${fmtB(d.total||0)}</b></div>`;
+    tip.innerHTML = html;
+    const pad = $('chartPad').getBoundingClientRect();
+    tip.style.opacity = '1';
+    tip.style.left = Math.min(ev.clientX - pad.left + 14, pad.width - tip.offsetWidth - 6) + 'px';
+    tip.style.top = Math.max(ev.clientY - pad.top - tip.offsetHeight - 10, 0) + 'px';
+  };
+  window.hideTip = function(){
+    svg.classList.remove('hovering');
+    const gd = svg.querySelector('#guide'); if (gd) gd.style.opacity = '0';
+    tip.style.opacity = '0';
+  };
+}
+
+/* ── 各任务近况 ── */
+function renderMini(){
+  const box = $('taskMini');
+  if (!TASKS.length){ box.innerHTML = '<div class="empty">还没有备份任务</div>'; return; }
+  box.innerHTML = TASKS.map(t => {
+    const s = statsOf(t.id);
+    const today = s ? s.today_bytes : 0;
+    let sb;
+    if (t.running){
+      sb = t.running_dry ? `<span class="st warn"><i></i>预览中</span>` : `<span class="st run"><i></i>运行中</span>`;
+    } else if (t.last_real || t.last){
+      const lr = t.last_real || t.last;
+      sb = stHtml(lr.status) + ' · ' + esc((lr.finished_at||lr.started_at||'').slice(5,16));
+    } else {
+      sb = '<span class="st none"><i></i>从未运行</span>';
+    }
+    return `<div class="mini"><span class="dot" style="background:${colorOf(t.id)}"></span>
+      <div style="min-width:0"><div class="nm">${esc(t.name)}</div><div class="sb">${sb}</div></div>
+      <div class="val"><div class="b">${fmtB0(today)}</div><div class="s">${today>0?'今日':'无新文件'}</div></div></div>`;
+  }).join('');
+}
+
+function replayAnim(tb){
+  tb.classList.remove('in'); void tb.offsetWidth; tb.classList.add('in');
+}
+
+/* ── 任务表 ── */
+/* loadTasks 只负责拉取；渲染独立成 renderTasks，供 loadStats 到货后复用，
+   避免重复请求，也保证「任务列表」永远是首屏必加载项（2026-10-28 事故：
+   loadTasks 被藏在 loadStats 的 if 分支里，首次加载 TASKS 为空导致永远不执行，
+   表格停在「加载中…」、近况停在「还没有备份任务」）。 */
+async function loadTasks(anim){
+  try{
+    TASKS = await api('/api/tasks');
+  }catch(e){
+    $('taskBody').innerHTML = `<tr><td colspan="8" class="empty">${esc(e.message)}</td></tr>`;
+    return;
+  }
+  renderTasks(anim);
+  renderMini();
+  /* 任务清单到货后重绘图表：refreshAll 里 stats 与 tasks 并行竞速，
+     stats 先到时图表会用空 TASKS 上色（全部掉成第一色），这里收敛掉 */
+  if (STATS && STATS.daily) renderChart();
+}
+
+function renderTasks(anim){
+  $('taskCount').textContent = TASKS.length + ' 个任务';
+  const tb = $('taskBody');
+  if(!TASKS.length){
+    tb.innerHTML = `<tr><td colspan="8" class="empty">还没有备份任务，点右上角「新增备份任务」</td></tr>`;
+    renderMini();
+    return;
+  }
+  tb.innerHTML = TASKS.map(t => {
+    const last = t.last_real || t.last;
+    const isPush = (t.mode||'dir') === 'push';
+    let lastCell;
+    if(t.running){
+      lastCell = t.running_dry
+        ? `<span class="st warn"><i></i>预览中</span>`
+        : `<span class="st run"><i></i>运行中</span>`;
+    } else if(last){
+      lastCell = stHtml(last.status)
+        + (last.kind && !['ok','preview','running','stopped','interrupted'].includes(last.kind)
+            ? `<span class="kind" title="${esc(last.detail||last.reason||'')}">${esc(last.label)}</span>` : '');
+    } else {
+      lastCell = '<span class="muted">从未运行</span>';
+    }
+    const s = statsOf(t.id);
+    let acts;
+    if(t.running){
+      acts = `<span class="lnk danger" onclick="stopTask(${t.id})" title="传完当前文件后中止">${ico('stop')}停止</span>`
+           + `<span class="lnk" onclick="openLog(${t.id},null)" title="看进度">日志</span>`;
+    } else if(isPush){
+      acts = `<span class="lnk" onclick="openLog(${t.id},null)" title="查看每次推送的结果与日志">${ico('history')}记录</span>`
+           + `<span class="lnk" onclick="openEditor(${t.id})">编辑</span>`
+           + `<span class="lnk danger" onclick="delTask(${t.id},'${esc(t.name)}')">删除</span>`;
+    } else {
+      acts = `<span class="lnk" onclick="runTask(${t.id},0)" title="立即备份：真正扫描并上传到联通云盘（会传输文件）" style="font-weight:600">${ico('play')}备份</span>`
+           + `<span class="lnk" onclick="runTask(${t.id},1)" title="预览：只比对并列出待传清单，绝不备份、绝不上传">${ico('eye')}预览</span>`
+           + `<span class="lnk" onclick="openEditor(${t.id})">编辑</span>`
+           + `<span class="lnk danger" onclick="delTask(${t.id},'${esc(t.name)}')">删除</span>`;
+    }
+    return `<tr class="${t.running&&!t.running_dry?'row-run':''}">
+      <td data-label="任务" title="${esc(t.note||t.src||'')}">
+          <div class="cellmain"><b class="tname" onclick="openCard(${t.id})" title="查看备份详情">${esc(t.name)}</b>${t.enabled?'':' <span class="st none"><i></i>已停用</span>'}${isPush?' <span class="tbadge">脚本推送</span>':''}</div>
+          <div class="cellsub mono path" title="本地路径：${esc(t.src||'—')}">${esc(tailPath(t.src))}</div></td>
+      <td data-label="云端路径" class="path" title="云端路径：${esc((t.cloud||[]).join('/')||'—')}">${esc((t.cloud||[]).join('/')||'—')}</td>
+      <td data-label="调度" title="${esc(t.cron||'')}">
+          <div class="cellmain">${t.cron?esc(cronDescribe(t.cron)):'手动'}</div>
+          <div class="cellsub">${t.enabled ? (t.next_run? '下次 '+esc(t.next_run.slice(5,16)) : '—') : '—'}</div></td>
+      <td data-label="今日" class="num">${s?fmtB0(s.today_bytes):'—'}</td>
+      <td data-label="本月" class="num">${s?fmtB0(s.month_bytes):'—'}</td>
+      <td data-label="累计" class="num">${s?fmtB0(s.total_bytes):'—'}</td>
+      <td data-label="上次运行">
+          <div class="cellmain">${lastCell}</div>
+          <div class="cellsub mono">${(!t.running&&last)?esc((last.finished_at||last.started_at||'').slice(5,16)):''}</div></td>
+      <td class="c-act"><div class="actions">${acts}</div></td>
+    </tr>`;
+  }).join('');
+  if(anim) replayAnim(tb);
+}
+
+/* ── 运行记录 ── */
+async function loadRuns(anim){
+  let runs;
+  try{
+    runs = await api('/api/runs?limit=80');
+  }catch(e){
+    $('runBody').innerHTML = `<tr><td colspan="8" class="empty">${esc(e.message)}</td></tr>`;
+    return;
+  }
+  RUNS = runs;
+  $('runCount').textContent = runs.length + ' 条';
+  if (RUN_VIEW === 'tl') renderTimeline();
+  const rb = $('runBody');
+  if(!runs.length){
+    rb.innerHTML = `<tr><td colspan="8" class="empty">暂无运行记录</td></tr>`;
+    return;
+  }
+  rb.innerHTML = runs.map(r => {
+    const rate = (r.bytes>0 && r.elapsed>0) ? fmtB(r.bytes/r.elapsed)+'/s' : null;
+    return `<tr>
+      <td class="mono muted" style="white-space:nowrap">${esc((r.started_at||'').slice(5))}</td>
+      <td style="white-space:nowrap"><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:3px;background:${colorOf(r.task_id)};margin-right:7px;vertical-align:0"></span>${esc(r.task_name||'')}</td>
+      <td style="white-space:nowrap">${stHtml(r.status)}${(r.kind && !['ok','preview','running','stopped','interrupted'].includes(r.kind))?`<span class="kind" title="${esc(r.detail||r.reason||'')}">${esc(r.label)}</span>`:(r.reason&&r.reason!=='dry-run'?` <span class="muted mono" style="font-size:11px">${esc(r.reason)}</span>`:'')}</td>
+      <td class="num">${r.todo} / ${r.ok_n} / <span style="color:${r.fail?'var(--bad)':'inherit'}">${r.fail}</span></td>
+      <td class="num">${fmtB(r.bytes)}</td>
+      <td class="num ${rate?'':'muted'}" style="font-weight:500">${rate||'—'}</td>
+      <td class="num" style="font-weight:500">${fmtDur(r.elapsed)}</td>
+      <td><span class="lnk" onclick="openLog(${r.task_id},${r.id})" title="完整日志">${ico('doc')}</span></td>
+    </tr>`;
+  }).join('');
+  if(anim) replayAnim(rb);
+}
+
+let RUNS = [], RUN_VIEW = 'table';
+function setRunView(v){
+  RUN_VIEW = v;
+  [...$('runSeg').children].forEach(x => x.classList.toggle('on', x.dataset.v === v));
+  $('timeline').style.display = v === 'tl' ? 'block' : 'none';
+  document.querySelector('table.runs').parentElement.style.display = v === 'tl' ? 'none' : 'block';
+  if (v === 'tl') renderTimeline();
+}
+function tlCls(st){
+  return ({success:'ok', failed:'bad', running:'run', 'dry-run':'warn',
+           stopped:'warn', interrupted:'warn'})[st] || '';
+}
+function renderTimeline(){
+  const box = $('timeline');
+  if (!RUNS.length){ box.innerHTML = '<div class="empty">暂无运行记录</div>'; return; }
+  const by = {};
+  RUNS.forEach(r => { (by[r.task_id] = by[r.task_id] || []).push(r); });
+  const rows = Object.keys(by).map(tid => {
+    const rs = by[tid].slice().reverse();          // 早 → 晚，右边是最新
+    const name = rs[0].task_name || ('#' + tid);
+    const cells = rs.map(r => `<i class="${tlCls(r.status)}"
+        title="${esc((r.finished_at || r.started_at || '').slice(5))} · ${esc(r.label || r.status)}${r.bytes ? ' · ' + fmtB(r.bytes) : ''}"
+        onclick="openLog(${r.task_id},${r.id})"></i>`).join('');
+    return `<div class="tlrow"><span class="tlname" title="${esc(name)}">${esc(name)}</span>
+      <span class="tlcells">${cells}</span></div>`;
+  }).join('');
+  box.innerHTML = rows + `<div class="tlleg">
+      <span><s style="background:var(--ok)"></s>成功</span>
+      <span><s style="background:var(--bad)"></s>失败</span>
+      <span><s style="background:var(--warn)"></s>预览/中断</span>
+      <span><s style="background:var(--line2)"></s>无记录（左侧更早）</span>
+      <span style="margin-left:auto">点方块看当次日志</span></div>`;
+}
+
+function refreshAll(){
+  loadOverview().catch(()=>{});
+  loadStats().catch(e=>console.warn('stats:', e.message));
+  loadTasks(false).catch(()=>{});
+  loadRuns(false).catch(()=>{});
+  loadQuota().catch(()=>{});
+  loadCloud().catch(()=>{});
+}
+
+/* 手动刷新：按钮转圈 + toast 确认 */
+let REFRESHING = false;
+async function manualRefresh(btn){
+  if(REFRESHING) return;
+  REFRESHING = true;
+  btn.classList.add('busy');
+  try{
+    await Promise.all([loadOverview(), loadStats(), loadTasks(true), loadRuns(true),
+                       loadQuota(true), loadCloud()]);
+    const t = new Date();
+    toast('已刷新 · ' + String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0') + ':' + String(t.getSeconds()).padStart(2,'0'));
+  }catch(e){ toast('刷新失败：' + e.message); }
+  btn.classList.remove('busy');
+  REFRESHING = false;
+}
+
+/* ── 主题切换 ── */
+function themeIcon(){
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  $('themeBtn').innerHTML = ico(dark ? 'sun' : 'moon') + (dark?'浅色':'深色');
+  const mt = $('metaTheme');
+  if(mt) mt.content = dark ? '#0f1417' : '#ffffff';
+}
+function toggleTheme(){
+  const nxt = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', nxt);
+  try{ localStorage.setItem('mb-theme', nxt); }catch(e){}
+  themeIcon();
+  if (STATS) renderChart();
+  toast(nxt === 'light' ? '已切换到浅色主题' : '已切换到深色主题');
+}
+
+/* ── 操作 ── */
+async function runTask(id, dry){
+  try{
+    await api(`/api/tasks/${id}/run?dry_run=${dry}`, {method:'POST'});
+    toast(dry ? '预览已启动：只扫描比对，不上传任何文件' : '备份已启动');
+    setTimeout(()=>{ refreshAll(); openLog(id,null); }, 400);
+  }catch(e){ toast('启动失败：'+e.message); }
+}
+async function stopTask(id){
+  try{ await api(`/api/tasks/${id}/stop`,{method:'POST'}); toast('已请求停止，当前文件传完后中止'); }
+  catch(e){ toast('停止失败：'+e.message); }
+}
+async function delTask(id,name){
+  if(!confirm(`确定删除任务「${name}」？\n云端已备份的文件不会被删除。`)) return;
+  try{ await api(`/api/tasks/${id}`,{method:'DELETE'}); toast('已删除'); refreshAll(); }
+  catch(e){ toast('删除失败：'+e.message); }
+}
+
+/* ── cron 可视化 ── */
+const DOW_CN = {0:'日',1:'一',2:'二',3:'三',4:'四',5:'五',6:'六'};
+function cronDescribe(c){
+  const p = (c||'').trim().split(/\s+/);
+  if(p.length!==5) return '';
+  const [mi,h,d,mo,w] = p;
+  const t = h.padStart(2,'0')+':'+mi.padStart(2,'0');
+  if(d==='*'&&mo==='*'&&w==='*')   return '每天 '+t;
+  if(d==='*'&&mo==='*')            return '每周'+(DOW_CN[w]||w)+' '+t;
+  if(mo==='*'&&w==='*')            return '每月'+parseInt(d,10)+'日 '+t;
+  return 'cron '+c;
+}
+function cronApply(){
+  const f = $('f_cfreq').value;
+  $('f_ctime').style.display = (f==='daily'||f==='weekly'||f==='monthly') ? '' : 'none';
+  $('f_cdow').style.display  = f==='weekly'  ? '' : 'none';
+  $('f_cdom').style.display  = f==='monthly' ? '' : 'none';
+  const cr = $('f_cron');
+  if(f==='custom'){ $('f_cronhint').textContent = '手写 cron（分 时 日 月 周）'; return; }
+  if(f===''){ cr.value=''; $('f_cronhint').textContent='留空则只手动运行'; return; }
+  const tv = ($('f_ctime').value||'04:40').split(':');
+  const h = parseInt(tv[0],10)||0, m = parseInt(tv[1],10)||0;
+  let c='';
+  if(f==='daily')        c = m+' '+h+' * * *';
+  else if(f==='weekly')  c = m+' '+h+' * * '+$('f_cdow').value;
+  else if(f==='monthly') c = m+' '+h+' '+Math.min(31,Math.max(1,parseInt($('f_cdom').value,10)||1))+' * *';
+  cr.value = c;
+  $('f_cronhint').textContent = '将按「'+cronDescribe(c)+'」运行';
+}
+/* 把已有 cron 还原成控件状态；认不出的写法落到自定义，绝不悄悄改写 */
+function cronParse(c){
+  c = (c||'').trim();
+  if(!c){ $('f_cfreq').value=''; cronApply(); return; }
+  const p = c.split(/\s+/);
+  if(p.length===5){
+    const [mi,h,d,mo,w] = p;
+    const num = s => /^\d{1,2}$/.test(s);
+    if(num(mi)&&num(h)){
+      const t = h.padStart(2,'0')+':'+mi.padStart(2,'0');
+      if(d==='*'&&mo==='*'&&w==='*'){
+        $('f_cfreq').value='daily'; $('f_ctime').value=t; cronApply(); return;
+      }
+      if(d==='*'&&mo==='*'&&/^[0-7]$/.test(w)){
+        $('f_cfreq').value='weekly'; $('f_ctime').value=t; $('f_cdow').value=w; cronApply(); return;
+      }
+      if(mo==='*'&&w==='*'&&/^\d+$/.test(d)&&+d>=1&&+d<=31){
+        $('f_cfreq').value='monthly'; $('f_ctime').value=t; $('f_cdom').value=d; cronApply(); return;
+      }
+    }
+  }
+  $('f_cfreq').value='custom'; cronApply(); $('f_cron').value=c;
+}
+['f_cfreq','f_ctime','f_cdow','f_cdom'].forEach(id=>{
+  $(id).addEventListener('change', cronApply);
+  $(id).addEventListener('input',  cronApply);
+});
+
+/* ── 编辑器 ── */
+async function openEditor(id){
+  const t = id ? TASKS.find(x=>x.id===id) : null;
+  $('editTitle').textContent = t ? ('编辑：'+t.name) : '新增备份任务';
+  $('f_id').value = t?t.id:'';
+  $('f_name').value = t?t.name:'';
+  $('f_src').value = t?t.src:'';
+  $('f_cloud').value = t?(t.cloud||[]).join('/'):'';
+  cronParse(t?t.cron:'');
+  $('f_workers').value = t?t.workers:4;
+  $('f_excludes').value = t?(t.excludes||[]).join('\n'):'';
+  $('f_note').value = t?t.note:'';
+  $('editMask').classList.add('on');
+  await browse('');
+}
+function closeEditor(){ $('editMask').classList.remove('on'); }
+
+async function browse(path){
+  try{
+    const d = await api('/api/fs/list?path='+encodeURIComponent(path||''));
+    const bp = $('browsePath');
+    if(d.path){ bp.style.display='block'; bp.textContent = d.path; } else { bp.style.display='none'; }
+    // 允许范围从服务端返回值取，前端不写死路径
+    if(!path){
+      const roots = (d.entries||[]).filter(e=>e.root).map(e=>e.path);
+      if(roots.length) $('rootHint').textContent = '只允许在 ' + roots.join(' 与 ') + ' 内选择';
+    }
+    let html = '';
+    if(d.parent!==undefined && d.path){
+      html += `<div class="bi" onclick="browse('${esc(d.parent)}')">
+        <span style="color:var(--ink2)">↑</span><span class="nm">返回上级</span></div>`;
+    }
+    html += (d.entries||[]).map(e => {
+      if(e.type==='dir'){
+        return `<div class="bi" onclick="browse('${esc(e.path)}')">
+          ${ico('folder')}<span class="nm">${esc(e.name)}</span></div>`;
+      }
+      return `<div class="bi" style="opacity:.55;cursor:default">
+        ${ico('doc')}<span class="nm">${esc(e.name)}</span>
+        <span class="sz">${fmtB(e.size)}</span></div>`;
+    }).join('');
+    if(!(d.entries||[]).length) html += '<div class="empty" style="padding:20px">空目录</div>';
+    $('browser').innerHTML = html;
+    if(d.path) $('f_src').value = d.path;
+  }catch(e){ $('browser').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+async function saveTask(){
+  const id = $('f_id').value;
+  const body = {
+    name: $('f_name').value.trim(),
+    src: $('f_src').value.trim(),
+    cloud: $('f_cloud').value.split('/').map(s=>s.trim()).filter(Boolean),
+    cron: $('f_cron').value.trim(),
+    excludes: $('f_excludes').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    workers: Number($('f_workers').value)||4,
+    enabled: true,
+    note: $('f_note').value.trim(),
+  };
+  if(!body.name || !body.src || !body.cloud.length){ toast('名称、源目录、云端路径都要填'); return; }
+  try{
+    if(id) await api('/api/tasks/'+id,{method:'PUT',body:JSON.stringify(body)});
+    else    await api('/api/tasks',{method:'POST',body:JSON.stringify(body)});
+    toast('已保存'); closeEditor(); refreshAll();
+  }catch(e){ toast('保存失败：'+e.message); }
+}
+
+/* ── 日志 ── */
+async function openLog(taskId, runId){
+  CUR_LOG = {taskId, runId};
+  $('logMask').classList.add('on');
+  $('logTitle').textContent = '运行日志';
+  const t = TASKS.find(x=>x.id===taskId);
+  if(t) $('logTitle').textContent = '日志：'+t.name;
+  if(runId){
+    $('logProgress').style.display='none';
+    const r = await api('/api/runs/'+runId);
+    $('logBox').textContent = r.log || '(无日志)';
+    $('logBox').scrollTop = $('logBox').scrollHeight;
+  } else {
+    pollLive();
+  }
+}
+function closeLog(){
+  $('logMask').classList.remove('on');
+  if(POLL){ clearInterval(POLL); POLL=null; }
+}
+async function pollLive(){
+  if(POLL) clearInterval(POLL);
+  const tick = async () => {
+    try{
+      const st = await api(`/api/tasks/${CUR_LOG.taskId}/live`);
+      const p = st.progress||{};
+      const t0 = TASKS.find(x=>x.id===CUR_LOG.taskId);
+      if(t0) $('logTitle').textContent = (st.dry_run ? '预览（不上传）：' : '日志：') + t0.name;
+      if(st.running){
+        $('logProgress').style.display='block';
+        const pct = p.total ? Math.round(p.done*100/p.total) : 0;
+        $('logBar').style.width = pct+'%';
+        $('logStat').textContent = `${p.done||0}/${p.total||0} 个 · ${fmtB(p.bytes||0)} · ${p.name?esc(p.name):''}`;
+      } else {
+        $('logProgress').style.display='none';
+        if(POLL){ clearInterval(POLL); POLL=null; refreshAll(); }
+      }
+      $('logBox').textContent = (st.log_tail||[]).join('\n') || '(等待输出…)';
+      $('logBox').scrollTop = $('logBox').scrollHeight;
+    }catch(e){ /* 忽略瞬时错误 */ }
+  };
+  await tick();
+  POLL = setInterval(tick, 1500);
+}
+
+/* ── 备份详情（保险单）── */
+let CARD_TID = null, CARD_TEXT = '';
+
+function rpoText(cron, mode){
+  const p = (cron || '').trim().split(/\s+/);
+  if (p.length !== 5) {
+    return (mode === 'push') ? '脚本推送（调度在宿主机）' : '手动';
+  }
+  // 允许中断的最坏情况：日/月字段固定 → 月级任务 ≈32 天；否则按天跑 ≈26 小时
+  return (p[2] !== '*' || p[3] !== '*') ? '约 32 天' : '约 26 小时';
+}
+
+function openCard(tid){
+  const t = TASKS.find(x => x.id === tid);
+  if (!t) return;
+  CARD_TID = tid;
+  const last = t.last_real || t.last || {};
+  const cl = (CLOUD && (CLOUD.tasks || []).find(x => x.task_id === tid)) || null;
+  const sh = h => h == null ? '—' : (h < 48 ? h.toFixed(1) + ' 小时前' : (h / 24).toFixed(1) + ' 天前');
+  const ageH = last.finished_at ? (Date.now() - new Date(last.finished_at.replace(' ', 'T')).getTime()) / 3600000 : null;
+  const push = (t.mode || 'dir') === 'push';
+  const rows = [
+    ['类型', push ? '脚本打包后推送（调度在宿主机 cron）' : '目录增量同步'],
+    ['本地路径', t.src || '—', 'mono'],
+    ['云端路径', '联通云盘 / ' + ((t.cloud || []).join('/') || '—'), 'mono'],
+    ['调度', (t.cron ? cronDescribe(t.cron) : '手动') + (t.next_run ? '（下次 ' + t.next_run.slice(5, 16) + '）' : ''), ''],
+    ['允许中断', rpoText(t.cron, t.mode), ''],
+    ['最近成功', last.status === 'success' ? (last.finished_at || '') + '（' + sh(ageH) + '）' : '最近一次不是成功：' + (last.label || '—'), ''],
+    ['云端占用', cl && cl.bytes != null ? fmtB(cl.bytes) + ' · ' + (cl.files || 0) + ' 个文件' : '统计中', ''],
+    ['保留策略', (t.keep || 0) ? '保留 ' + t.keep + ' 份历史' : '镜像同步（云端与源目录一致，源删则云端删）', ''],
+    ['排除规则', (t.excludes || []).length ? (t.excludes || []).join('、') : '无', 'mono'],
+  ];
+  $('cardTitle').textContent = t.name;
+  $('cardBody').innerHTML = rows.map(([k, v, cls]) =>
+    `<div class="kv"><div class="k">${k}</div><div class="v ${cls || ''}">${esc(v)}</div></div>`).join('');
+  CARD_TEXT = rows.map(([k, v]) => k + '：' + v).join('\n');
+  $('cardMask').classList.add('on');
+}
+function closeCard(){ $('cardMask').classList.remove('on'); }
+function copyCard(){
+  const text = '【' + ($('cardTitle').textContent) + '】\n' + CARD_TEXT;
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(() => toast('已复制，可直接粘到微信/邮件'));
+  } else { toast('当前浏览器不支持一键复制'); }
+}
+/* ── 快捷键 ── */
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input,textarea,select')) return;
+  const k = e.key.toLowerCase();
+  if (k === 'r'){ e.preventDefault(); manualRefresh($('btnRefresh')); }
+  else if (k === 't'){ e.preventDefault(); toggleTheme(); }
+  else if (k === '?'){
+    toast('快捷键：R 刷新 · T 切换主题 · Esc 关闭弹窗');
+  }
+  else if (e.key === 'Escape'){
+    closeCard(); closeLog(); closeEditor();
+  }
+});
+
+themeIcon();
+refreshAll();
+/* ── 智能轮询（沿用 2026-10-28 方案）──
+   空闲：零请求；有任务运行：每 5 秒一刷；空闲 5 分钟兜底一巡；
+   切回标签页：立即刷新一次。 */
+setInterval(()=>{ if(!document.hidden && TASKS.some(t=>t.running)) refreshAll(); }, 5000);
+setInterval(()=>{ if(!document.hidden) refreshAll(); }, 300000);
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) refreshAll(); });
+</script>
+</body>
+</html>
