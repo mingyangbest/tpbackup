@@ -739,7 +739,7 @@ function renderDrill(){
   const hashNote = (DRILL.hash_mismatch||0)
     ? `<div class="ql">哈希不符 ${DRILL.hash_mismatch} 个（内容可能已变，请留意）</div>` : '';
   const staleNote = DRILL.stale
-    ? `<div class="ql">上次演练距今 ${DRILL.age_days} 天，已超过 35 天，建议重跑一次 drill.py。</div>` : '';
+    ? `<div class="ql">上次演练距今 ${DRILL.age_days} 天，已超过 45 天，建议重跑一次 drill.py。</div>` : '';
   box.innerHTML = `<div class="qh">恢复演练 ${badge}<span class="pct">${esc(DRILL.at||'')} · 抽样 ${n} 个，通过 ${ok} 个，失败 ${fail} 个</span></div>
     ${hashNote}${staleNote}${fails}`;
 }

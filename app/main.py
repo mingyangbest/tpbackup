@@ -1071,9 +1071,13 @@ def drill_status(_=Depends(auth)):
         return {"available": False}
     age_days, stale = None, False
     try:
-        t = datetime.strptime(rep.get("at") or "", "%F %T")
+        # strptime 不认 %F（只有 strftime 认），用 "%F %T" 会抛 ValueError，
+        # 被下面的 except 吞掉 → age_days 恒为 None、stale 永远 False，
+        # 「超期未演练」的判断形同虚设。实测于 2026-10-30 真机。
+        t = datetime.strptime(rep.get("at") or "", "%Y-%m-%d %H:%M:%S")
         age_days = (datetime.now() - t).days
-        stale = age_days > 35
+        # 与 homenet-backup/check.sh 的判定保持一致（45 天）
+        stale = age_days > 45
     except Exception:
         pass
     out = dict(rep)
