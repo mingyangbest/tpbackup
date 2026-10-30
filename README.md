@@ -3,11 +3,20 @@
 联通云盘（沃盘）备份管理台。把「扫描本地目录 → 比对云端 → 增量上传 → 校验 → 记日志」收进一个容器，网页管理，定时调度，上传后逐文件复核。
 
 为 NAS 上的照片、媒体库、文档这类「只增不改」的目录设计，也支持先在宿主机打包快照、再交给它上传的推送模式。
-<img width="1162" height="730" alt="12" src="https://github.com/user-attachments/assets/3ee717d4-47ae-4c6e-a478-770e3b92b6db" />
-<img width="1171" height="711" alt="13" src="https://github.com/user-attachments/assets/7c1da9b8-2788-4ef0-84c2-2c1e352e62f2" />
-<img width="1162" height="717" alt="14" src="https://github.com/user-attachments/assets/7ded0d03-563b-41f8-9d76-ead4a9dd7e08" />
 
-<!-- 建议在这里放一张 Web 界面截图：发布前到 http://<NAS-IP>:8088 截一张主界面 -->
+![主界面：今日/本月/累计上传、上传趋势、云盘容量与各任务云端占用，底部是最近一次恢复演练结论](docs/screenshots/01-overview.png)
+
+<sub>主界面 —— 上传趋势、云盘容量、各任务云端占用、最近一次恢复演练</sub>
+
+![任务表：每个任务的本地路径、云端路径、调度、今日/本月/累计传输量与上次运行状态](docs/screenshots/02-tasks.png)
+
+<sub>任务表 —— 本地 / 云端路径、调度、传输量、上次运行；点任务名可看详情</sub>
+
+![任务详情卡：类型、路径、调度、允许中断时长、最近成功、云端占用、保留策略与「扫描孤儿」入口](docs/screenshots/03-detail.png)
+
+<sub>任务详情 —— 允许中断、最近成功、云端占用、保留策略，以及「扫描孤儿」入口</sub>
+
+更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 功能特性
 
@@ -16,10 +25,17 @@
 - **试运行**：只扫描比对列出待传清单，一个字节都不传。新任务先试运行再真跑
 - **定时调度**：每个任务一条 cron 表达式，改完即生效，不用重启
 - **推送模式**：密码库导出、虚拟机镜像这类需要先在宿主机打包/加密的任务，由宿主机脚本打包后调 API 上传，支持云端保留 N 份滚动清理
-- **恢复与演练**：界面直接浏览云端、单文件或整目录取回；附带恢复演练脚本，每月随机抽样真下载回来校验
+- **恢复演练**：每月随机抽样，从云端真下载回来——先比体积、再比 SHA256；结果进面板，失败或超 45 天未演练会被巡检抓出来
+- **孤儿扫描**：云端有、本地已经没有的文件和目录（改名、挪目录留下的），列成清单给你看，**只列不删**
+- **界面换令牌**：令牌过期不用 SSH，Token 卡片里粘贴即可——保存前先真连一次云端验证，验不过不动现有凭证
 - **令牌自管理**：云盘令牌有效期 7 天，剩余不足 2 天自动续期；可选与 OpenList 共用同一凭证（本应用作为唯一刷新者）
 - **心跳外报**：每次运行结束把结果推给 Uptime Kuma 的 push 监控项，失败时带上原因，告警策略交给 Kuma
 - 单文件前端，零外部依赖，内联图标离线可用，明暗双主题
+
+## 安全边界
+
+- **dir 模式不加密**：照片、媒体库这类目录是**原样上传**的，云端能看到文件内容和文件名。放密码库、密钥、证件这类敏感数据请走 **push 模式**——先在宿主机打包并加密（`openssl` / `age` 都行），再交给本应用上传，云端只有密文。
+- Web 端是**单账号 Basic Auth**，只建议内网使用。要暴露到公网，请放在 HTTPS 反向代理之后，别把 8088 裸奔在上面。
 
 ## 快速开始
 
@@ -59,6 +75,13 @@ sudo docker ps --filter name=tpbackup
 
 ### 3. 放置令牌
 
+打开 `http://<NAS-IP>:8088`，在右上「Token 剩余」卡片里点 **粘贴令牌**，填 `access_token` 和 `refresh_token`，点「保存并验证」。
+
+保存前系统会拿这对令牌真连一次云端（列一次云盘根目录），**通过才落盘**；验不过什么都不改，现有凭证不会丢。成功即生效，不用重启容器。
+
+<details>
+<summary>也可以用 SSH 直接写文件（排错或自动化时用）</summary>
+
 ```bash
 sudo mkdir -p data/state
 sudo tee data/state/token.json >/dev/null <<'EOF'
@@ -73,6 +96,7 @@ sudo docker compose restart
 ```
 
 `updated` 只用于计算剩余天数，填当前时间即可，续期后系统自己更新。
+</details>
 
 确认生效：
 
@@ -140,7 +164,21 @@ python3 taskstat.py --task immich
 
 ### 恢复
 
-界面进入任务详情可浏览云端目录，「取回」支持单文件或整目录，落到 `TP_ALLOWED_ROOTS` 内的指定位置。`tools/drill.py` 做月度演练：随机抽样真实下载回来校验——界面上的「成功」只证明传得上去，演练证明取得回来。
+界面上**没有放取回入口**（按需再开），需要取回时直接调接口，落到 `TP_ALLOWED_ROOTS` 内的指定目录：
+
+```bash
+# 整目录（path 留空表示任务云端根目录）
+curl -u admin:<密码> -X POST http://127.0.0.1:8088/api/restore \
+  -H 'Content-Type: application/json' \
+  -d '{"task_id":1,"path":"","dest":"/vol1/1000/恢复"}'
+
+# 单文件
+curl -u admin:<密码> -X POST http://127.0.0.1:8088/api/restore \
+  -H 'Content-Type: application/json' \
+  -d '{"task_id":4,"path":"vaultwarden-20261030T034001.tar.gz","dest":"/vol1/1000/恢复"}'
+```
+
+`tools/drill.py` 做月度演练：随机抽样真实下载回来，先比体积、再比 SHA256——界面上的「成功」只证明传得上去，演练证明取得回来。
 
 ### 与 OpenList 共用令牌
 
