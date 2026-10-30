@@ -388,6 +388,7 @@ tbody.in>tr{animation:rowin .26s ease both}
         <div class="tip" id="tip"></div>
       </div>
       <div class="quota" id="quotaBox"></div>
+      <div class="quota" id="drillBox"></div>
     </div>
 
     <div class="card">
@@ -541,6 +542,20 @@ tbody.in>tr{animation:rowin .26s ease both}
     <div class="modal-f">
       <button class="btn ghost" onclick="copyCard()">复制为文本</button>
       <button class="btn primary" onclick="closeCard()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 孤儿扫描 -->
+<div class="mask" id="orphanMask">
+  <div class="modal" style="max-width:880px">
+    <div class="modal-h">
+      <h3 id="orphanTitle">孤儿扫描</h3>
+      <button class="btn ghost" onclick="closeOrphans()">关闭</button>
+    </div>
+    <div class="modal-b" id="orphanBody"></div>
+    <div class="modal-f">
+      <button class="btn primary" onclick="closeOrphans()">关闭</button>
     </div>
   </div>
 </div>
@@ -699,6 +714,34 @@ async function loadCloud(force){
   catch(e){ CLOUD = { tasks: [], error: e.message }; }
   CLOUD_AT = Date.now();
   renderQuota();
+}
+
+/* ── 恢复演练报告（drill.py 上报到 /api/drill）── */
+let DRILL = null;
+async function loadDrill(){
+  try { DRILL = await api('/api/drill'); }
+  catch(e){ DRILL = null; }
+  renderDrill();
+}
+function renderDrill(){
+  const box = $('drillBox');
+  if (!DRILL){ box.innerHTML = ''; return; }
+  if (!DRILL.available){
+    box.innerHTML = `<div class="qh">恢复演练<span class="pct">暂无报告</span></div>
+      <div class="ql">宿主机上的 drill.py 每月跑一次，跑完会自动把报告推到这里。</div>`;
+    return;
+  }
+  const ok = DRILL.ok||0, fail = DRILL.fail||0, n = DRILL.samples||0;
+  const badge = fail ? '<span class="st bad"><i></i>有失败</span>'
+    : (DRILL.stale ? '<span class="st warn"><i></i>已过期</span>' : '<span class="st ok"><i></i>通过</span>');
+  const fails = (DRILL.results||[]).filter(r=>!r.ok).map(r=>
+    `<div class="ql">${esc(r.path)}：${esc(r.error||'失败')}${r.hash?` [hash:${esc(r.hash)}]`:''}</div>`).join('');
+  const hashNote = (DRILL.hash_mismatch||0)
+    ? `<div class="ql">哈希不符 ${DRILL.hash_mismatch} 个（内容可能已变，请留意）</div>` : '';
+  const staleNote = DRILL.stale
+    ? `<div class="ql">上次演练距今 ${DRILL.age_days} 天，已超过 35 天，建议重跑一次 drill.py。</div>` : '';
+  box.innerHTML = `<div class="qh">恢复演练 ${badge}<span class="pct">${esc(DRILL.at||'')} · 抽样 ${n} 个，通过 ${ok} 个，失败 ${fail} 个</span></div>
+    ${hashNote}${staleNote}${fails}`;
 }
 function cloudBlock(){
   if (!CLOUD) return '';
@@ -1024,6 +1067,7 @@ function renderTasks(anim){
     } else {
       acts = `<span class="lnk" onclick="runTask(${t.id},0)" title="立即备份：真正扫描并上传到联通云盘（会传输文件）" style="font-weight:600">${ico('play')}备份</span>`
            + `<span class="lnk" onclick="runTask(${t.id},1)" title="预览：只比对并列出待传清单，绝不备份、绝不上传">${ico('eye')}预览</span>`
+           + `<span class="lnk" onclick="startOrphans(${t.id})" title="扫描云端有、本地没了的文件和目录，只列清单、不删除">孤儿扫描</span>`
            + `<span class="lnk" onclick="openEditor(${t.id})">编辑</span>`
            + `<span class="lnk danger" onclick="delTask(${t.id},'${esc(t.name)}')">删除</span>`;
     }
@@ -1121,6 +1165,7 @@ function refreshAll(){
   loadRuns(false).catch(()=>{});
   loadQuota().catch(()=>{});
   loadCloud().catch(()=>{});
+  loadDrill().catch(()=>{});
 }
 
 /* 手动刷新：按钮转圈 + toast 确认 */
@@ -1172,6 +1217,53 @@ async function delTask(id,name){
   try{ await api(`/api/tasks/${id}`,{method:'DELETE'}); toast('已删除'); refreshAll(); }
   catch(e){ toast('删除失败：'+e.message); }
 }
+
+/* ── 孤儿扫描（只列清单、不删除）── */
+let ORPH_TIMER = null;
+async function startOrphans(id){
+  let jid;
+  try{
+    const r = await api(`/api/tasks/${id}/orphans`, {method:'POST'});
+    jid = r.id;
+  }catch(e){ toast('启动孤儿扫描失败：'+e.message); return; }
+  const t = TASKS.find(x=>x.id===id);
+  $('orphanTitle').textContent = `孤儿扫描：${t?t.name:id}`;
+  $('orphanBody').innerHTML = '<div class="hint">扫描中…云端目录越大越慢，请稍候。</div>';
+  $('orphanMask').classList.add('on');
+  clearInterval(ORPH_TIMER);
+  ORPH_TIMER = setInterval(()=>pollOrphans(jid), 3000);
+  pollOrphans(jid);
+}
+async function pollOrphans(jid){
+  let d;
+  try{ d = await api(`/api/orphans/${jid}`); }
+  catch(e){ clearInterval(ORPH_TIMER); $('orphanBody').innerHTML = `<div class="hint">查询失败：${esc(e.message)}</div>`; return; }
+  if(d.state==='queued'||d.state==='running'){
+    $('orphanBody').innerHTML = '<div class="hint">扫描中…'+esc((d.log||[]).slice(-1)[0]||'')+'</div>';
+    return;
+  }
+  clearInterval(ORPH_TIMER);
+  if(d.state==='failed'){
+    $('orphanBody').innerHTML = `<div class="hint">扫描失败：${esc(d.error||'未知错误')}</div>`;
+    return;
+  }
+  renderOrphans(d);
+}
+function renderOrphans(d){
+  const frows = (d.files||[]).map(f=>`<div class="path">${esc(f.path)} <span class="muted">${fmtB(f.size)}</span></div>`).join('')
+    || '<div class="muted">无孤儿文件</div>';
+  const drows = (d.dirs||[]).map(x=>`<div class="path">${esc(x.path)} <span class="muted">${x.files} 个文件 / ${fmtB(x.bytes)}</span></div>`).join('')
+    || '<div class="muted">无孤儿目录</div>';
+  $('orphanBody').innerHTML = `
+    <div class="hint">共 ${d.total_files} 个文件 / ${fmtB(d.total_bytes)}（孤儿文件 ${(d.files||[]).length} 个，孤儿目录 ${(d.dirs||[]).length} 棵）${d.truncated?'，清单已截断，只显示前 2000 条':''}</div>
+    <div class="hint">仅扫描、不删除：删之前请先核对清单，删除/镜像模式后续再做。</div>
+    ${d.note?`<div class="hint">${esc(d.note)}</div>`:''}
+    <h4 style="margin:12px 0 6px">孤儿文件</h4>
+    <div style="max-height:260px;overflow:auto">${frows}</div>
+    <h4 style="margin:12px 0 6px">孤儿目录（整棵）</h4>
+    <div style="max-height:260px;overflow:auto">${drows}</div>`;
+}
+function closeOrphans(){ clearInterval(ORPH_TIMER); $('orphanMask').classList.remove('on'); }
 
 /* ── cron 可视化 ── */
 const DOW_CN = {0:'日',1:'一',2:'二',3:'三',4:'四',5:'五',6:'六'};

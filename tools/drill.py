@@ -12,10 +12,13 @@
 输出：
   health/drill.json  最近一次结果（check.sh 会读它判断是否过期/失败）
   health/drill.log   追加式流水
+  演练完还会把同一份报告 POST 到管理台 /api/drill/report（面板展示用），
+  上报失败只记 warning，绝不改变演练退出码
 退出码：0 全部通过；1 有失败
 """
 import argparse
 import base64
+import hashlib
 import json
 import os
 import random
@@ -110,6 +113,42 @@ def wait_job(api, jid, timeout=600):
     return {"state": "timeout", "error": "等待超时"}
 
 
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(1024 * 1024)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+def hash_check(api, task_by_id, it, out):
+    """体积通过后再比 SHA256。云端没给哈希时记 unknown，不推翻体积结论；
+    哈希不一致则该样本判失败。返回要并入结果记录的字段。"""
+    t = task_by_id.get(it["task_id"]) or {}
+    chain = list(t.get("cloud") or [])
+    parts = [p for p in it["path"].split("/") if p]
+    chain += parts[:-1]
+    name = parts[-1] if parts else it["name"]
+    try:
+        st, d = api.call("GET", "/api/jobs/stat?cloud=%s&name=%s" % (
+            urllib.parse.quote("/".join(chain)), urllib.parse.quote(name)))
+    except Exception as e:
+        return {"hash": "unknown", "hash_note": "查询失败：%s" % e}
+    cloud_hash = (d or {}).get("sha256") if st == 200 else None
+    if not cloud_hash:
+        return {"hash": "unknown"}
+    try:
+        local = sha256_file(out)
+    except Exception as e:
+        return {"hash": "unknown", "hash_note": "本地算哈希失败：%s" % e}
+    if local == cloud_hash:
+        return {"hash": "ok"}
+    return {"hash": "mismatch", "ok": False, "error": "哈希不符"}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--samples", type=int, default=5)
@@ -129,6 +168,7 @@ def main():
     if not tasks:
         log("没有可演练的任务")
         return 1
+    task_by_id = {t["id"]: t for t in tasks}
 
     log("===== 恢复演练开始：候选任务 %d 个，抽样 %d 个 =====" % (len(tasks), a.samples))
     cand = {}
@@ -178,19 +218,32 @@ def main():
                 rec.update({"ok": got == it["size"], "got": got})
                 if got != it["size"]:
                     rec["error"] = "体积不符：期望 %s，实际 %s" % (it["size"], got)
+                else:
+                    # 体积通过后、临时目录清理前，再比一次 SHA256
+                    rec.update(hash_check(api, task_by_id, it, out))
         ok_n += 1 if rec.get("ok") else 0
-        log("  [%s] %s :: %s（%s 字节）%s" % (
+        log("  [%s] %s :: %s（%s 字节）%s%s" % (
             "OK" if rec.get("ok") else "FAIL", it.get("path"), it["name"], it["size"],
-            "" if rec.get("ok") else " -> " + str(rec.get("error"))))
+            "" if rec.get("ok") else " -> " + str(rec.get("error")),
+            (" [hash:%s]" % rec["hash"]) if rec.get("hash") else ""))
         results.append(rec)
 
     shutil.rmtree(TMP, ignore_errors=True)
     report = {"at": time.strftime("%F %T"), "samples": len(picked),
-              "ok": ok_n, "fail": len(picked) - ok_n, "results": results}
+              "ok": ok_n, "fail": len(picked) - ok_n, "results": results,
+              "hash_ok": sum(1 for r in results if r.get("hash") == "ok"),
+              "hash_mismatch": sum(1 for r in results if r.get("hash") == "mismatch")}
     os.makedirs(os.path.dirname(REPORT), exist_ok=True)
     with open(REPORT, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
-    log("===== 演练结束：通过 %d / %d（报告 %s）=====" % (ok_n, len(picked), REPORT))
+    log("===== 演练结束：通过 %d / %d，哈希 ok %d / 不符 %d（报告 %s）=====" % (
+        ok_n, len(picked), report["hash_ok"], report["hash_mismatch"], REPORT))
+    try:
+        st, _ = api.call("POST", "/api/drill/report", report)
+        if st != 200:
+            log("演练报告上报面板失败（HTTP %s），本地报告不受影响" % st)
+    except Exception as e:
+        log("演练报告上报面板失败（%s），本地报告不受影响" % e)
     return 0 if ok_n == len(picked) else 1
 
 
