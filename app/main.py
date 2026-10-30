@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +29,7 @@ from .engine import find_file as engine_find
 from .engine import push as engine_push
 from .engine import quota as engine_quota
 from .engine import walk_usage as engine_walk
+from .orphans import scan_orphans
 from .notify import kuma
 from apscheduler.triggers.cron import CronTrigger
 from .runner import Runner
@@ -967,6 +968,116 @@ def restore_status(jid: str, _=Depends(auth)):
         raise HTTPException(404, "任务不存在或已过期")
     out = dict(st)
     out["log"] = st["log"][-40:]
+    return out
+
+
+# ── 孤儿扫描：只列清单、不删除 ──────────────────────────────
+_ORPH, _ORPH_LK = {}, threading.Lock()
+
+
+def _do_orphans(jid, t):
+    st = _ORPH[jid]
+    st["state"] = "running"
+
+    def _log(m):
+        st["log"].append("%s %s" % (time.strftime("%H:%M:%S"), m))
+        if len(st["log"]) > 400:
+            del st["log"][:100]
+
+    try:
+        w, res = engine_connect(store, _log)
+        if not w:
+            st["state"] = "failed"
+            st["error"] = res.get("reason") or "云端连接失败"
+            return
+        excludes = json.loads(t.get("excludes") or "[]")
+        chain = _cloud_chain(t)
+        r = scan_orphans(w, t.get("src") or "", chain, excludes, log=_log)
+        st.update({"files": r["files"], "dirs": r["dirs"],
+                   "total_files": r["total_files"],
+                   "total_bytes": r["total_bytes"],
+                   "truncated": r["truncated"], "note": r.get("note") or "",
+                   "state": "done"})
+        _log("完成：孤儿文件 %d 个、孤儿目录 %d 棵，共 %d 个文件 / %.1f MB%s" % (
+            len(r["files"]), len(r["dirs"]), r["total_files"],
+            r["total_bytes"] / 1048576.0,
+            "（清单已截断）" if r["truncated"] else ""))
+    except Exception as e:
+        st["state"] = "failed"
+        st["error"] = str(e)[:200]
+        _log("失败：%s" % str(e)[:160])
+
+
+@app.post("/api/tasks/{tid}/orphans")
+def start_orphans(tid: int, _=Depends(auth)):
+    t = db.get_task(tid)
+    if not t:
+        raise HTTPException(404, "任务不存在")
+    if (t.get("mode") or "dir") != "dir":
+        raise HTTPException(400, "仅 dir 任务支持孤儿扫描")
+    with _ORPH_LK:
+        for st in _ORPH.values():
+            if st.get("task_id") == tid and st["state"] in ("queued", "running"):
+                raise HTTPException(409, "该任务已有扫描在进行")
+        jid = secrets.token_hex(6)
+        _ORPH[jid] = {"id": jid, "task_id": tid, "task": t["name"],
+                      "state": "queued", "files": [], "dirs": [],
+                      "total_files": 0, "total_bytes": 0, "truncated": False,
+                      "note": "", "error": "", "log": [],
+                      "started": time.strftime("%F %T")}
+        for k in list(_ORPH.keys())[:-20]:
+            _ORPH.pop(k, None)
+    threading.Thread(target=_do_orphans, args=(jid, t), daemon=True).start()
+    return {"id": jid}
+
+
+@app.get("/api/orphans/{jid}")
+def orphan_status(jid: str, _=Depends(auth)):
+    st = _ORPH.get(jid)
+    if not st:
+        raise HTTPException(404, "任务不存在或已过期")
+    out = dict(st)
+    out["log"] = st["log"][-40:]
+    return out
+
+
+# ── 恢复演练报告：drill.py 上报，面板展示 ───────────────────
+@app.post("/api/drill/report")
+async def drill_report(req: Request, _=Depends(auth)):
+    try:
+        body = await req.json()
+    except Exception:
+        raise HTTPException(400, "报告必须是 JSON 对象")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "报告必须是 JSON 对象")
+    d = os.path.join(DATA, "state")
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, ".drill.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(body, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, os.path.join(d, "drill.json"))
+    return {"ok": True}
+
+
+@app.get("/api/drill")
+def drill_status(_=Depends(auth)):
+    p = os.path.join(DATA, "state", "drill.json")
+    if not os.path.exists(p):
+        return {"available": False}
+    try:
+        with open(p, encoding="utf-8") as f:
+            rep = json.load(f)
+    except Exception:
+        return {"available": False}
+    age_days, stale = None, False
+    try:
+        t = datetime.strptime(rep.get("at") or "", "%F %T")
+        age_days = (datetime.now() - t).days
+        stale = age_days > 35
+    except Exception:
+        pass
+    out = dict(rep)
+    out.update({"available": True, "stale": stale, "age_days": age_days})
     return out
 
 
