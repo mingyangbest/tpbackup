@@ -547,6 +547,34 @@ tbody.in>tr{animation:rowin .26s ease both}
 </div>
 
 <!-- 孤儿扫描 -->
+<!-- 粘贴令牌 -->
+<div class="mask" id="tokenMask">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-h">
+      <h3>粘贴云盘令牌</h3>
+      <button class="btn ghost" onclick="closeToken()">关闭</button>
+    </div>
+    <div class="modal-b">
+      <div class="field">
+        <label>access_token</label>
+        <textarea id="tkAt" rows="3" spellcheck="false" placeholder="从 AList 令牌工具复制" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+      </div>
+      <div class="field">
+        <label>refresh_token（强烈建议）</label>
+        <textarea id="tkRt" rows="2" spellcheck="false" placeholder="没有它，7 天后凭证会断且无法自动续期" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+      </div>
+      <div class="hint" style="line-height:1.9">
+        令牌用 <a href="https://alistgo.com/tool/wopan/token.html" target="_blank" rel="noopener">AList 令牌工具</a> 获取；取完别再去网页端登录联通云盘，会把这条登录踢掉。<br>
+        保存前会先用新令牌真连一次云端（列一次云盘根目录），通过才落盘——验不过就什么都不改，现有凭证不会丢。
+      </div>
+    </div>
+    <div class="modal-f">
+      <button class="btn ghost" onclick="closeToken()">取消</button>
+      <button class="btn primary" id="tkGo" onclick="saveToken()">保存并验证</button>
+    </div>
+  </div>
+</div>
+
 <div class="mask" id="orphanMask">
   <div class="modal" style="max-width:880px">
     <div class="modal-h">
@@ -799,7 +827,8 @@ function renderKpis(){
     kpiCard('c3','key','Token 剩余',
       tk.remain_days==null?'—':`<span class="${tcls}">${tk.remain_days}</span>`,
       ' 天',
-      tk.updated?('签发 '+esc(tk.updated.slice(5,16))):'未初始化');
+      (tk.updated?('签发 '+esc(tk.updated.slice(5,16))):'未初始化') +
+      ' · <span class="lnk" style="font-size:11px;padding:0 2px" onclick="openToken()" title="粘贴 access_token / refresh_token，不用再 SSH 改文件">粘贴令牌</span>');
 }
 
 /* ── 统计 + 图表 ── */
@@ -1479,6 +1508,32 @@ function copyCard(){
     navigator.clipboard.writeText(text).then(() => toast('已复制，可直接粘到微信/邮件'));
   } else { toast('当前浏览器不支持一键复制'); }
 }
+/* ── 粘贴令牌 ── */
+function openToken(){
+  $('tkAt').value = '';
+  $('tkRt').value = '';
+  $('tokenMask').classList.add('on');
+  setTimeout(() => { try { $('tkAt').focus(); } catch(e){} }, 60);
+}
+function closeToken(){ $('tokenMask').classList.remove('on'); }
+async function saveToken(){
+  const at = ($('tkAt').value || '').trim();
+  const rt = ($('tkRt').value || '').trim();
+  if (!at){ toast('access_token 不能为空'); return; }
+  const btn = $('tkGo');
+  btn.classList.add('busy');
+  try {
+    const r = await api('/api/token/paste', {method: 'POST', body: JSON.stringify({
+      access_token: at, refresh_token: rt })});
+    closeToken();
+    toast(r.warn ? '已保存，但' + r.warn : '令牌已生效：' + (r.info && r.info.remain_days != null ? '剩余 ' + r.info.remain_days + ' 天' : '已连接'));
+    refreshAll();
+  } catch(e){
+    toast('保存失败：' + e.message);
+  }
+  btn.classList.remove('busy');
+}
+
 /* ── 快捷键 ── */
 document.addEventListener('keydown', e => {
   if (e.target.matches('input,textarea,select')) return;
@@ -1489,7 +1544,7 @@ document.addEventListener('keydown', e => {
     toast('快捷键：R 刷新 · T 切换主题 · Esc 关闭弹窗');
   }
   else if (e.key === 'Escape'){
-    closeCard(); closeLog(); closeEditor();
+    closeCard(); closeLog(); closeEditor(); closeOrphans(); closeToken();
   }
 });
 

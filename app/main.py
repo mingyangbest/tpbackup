@@ -633,6 +633,38 @@ def token_renew(_=Depends(auth)):
         raise HTTPException(400, "刷新失败: %s" % str(e)[:200])
 
 
+class TokenIn(BaseModel):
+    access_token: str = ""
+    refresh_token: str = ""
+
+
+@app.post("/api/token/paste")
+def token_paste(d: TokenIn, _=Depends(auth)):
+    """界面粘贴令牌，省掉「SSH 进去 tee token.json + chmod + 重启」那一步。
+
+    先只拿粘贴来的令牌去云端做一次真实调用（ls 根目录），通过才落盘。
+    不能图省事用 engine_connect：它在凭证失败时会自动 recover（从 OpenList 库
+    或刷新），于是一个假令牌也能"连上"，把真令牌覆盖掉——实测踩到过。
+    """
+    from .engine import Wopan
+
+    at = (d.access_token or "").strip()
+    rt = (d.refresh_token or "").strip()
+    if not at:
+        raise HTTPException(400, "access_token 不能为空")
+
+    w = Wopan(at, rt)          # 不给 on_token：校验过程只读，不写盘
+    try:
+        w.ensure_family()
+        w.ls("0")              # QueryAllFiles 必须带有效令牌，拿它当试金石
+    except Exception as e:
+        raise HTTPException(400, "令牌不可用：%s" % str(e)[:160])
+
+    store.save(at, rt)
+    warn = "" if rt else "只填了 access_token：7 天后会失效，且无法自动续期"
+    return {"ok": True, "info": store.info(), "warn": warn}
+
+
 @app.get("/api/fs/list")
 def fs_list(path: str = Query(""), _=Depends(auth)):
     """目录浏览。只允许在 TP_ALLOWED_ROOTS 内。"""
