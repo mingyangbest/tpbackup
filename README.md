@@ -16,7 +16,7 @@
 
 <sub>任务详情 —— 允许中断、最近成功、云端占用、保留策略，以及「扫描孤儿」入口</sub>
 
-更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+版本与更新记录：[Releases](https://github.com/mingyangbest/tpbackup/releases) · [CHANGELOG.md](CHANGELOG.md)
 
 ## 功能特性
 
