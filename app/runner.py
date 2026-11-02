@@ -131,10 +131,15 @@ class Runner:
 
             log("源目录: %s" % task["src"])
             log("云端路径: %s" % "/".join(cloud))
+            if excludes:
+                log("排除规则: %s（目录与文件都适用）" % "、".join(excludes))
 
+            # 界面写的是「排除的目录 / 文件」，一个框管两类条目：
+            # 同一个列表同时喂给目录与文件，与 orphans.scan_orphans 的口径一致。
+            # v0.2.0 这里传的是 excludes_files=None，文件其实一条都没排掉。
             res = engine.sync(
                 store=self.store, src=task["src"], cloud_chain=cloud,
-                excludes_dirs=excludes, excludes_files=None,
+                excludes_dirs=excludes, excludes_files=excludes,
                 dry_run=dry_run, workers=task.get("workers") or 4,
                 log=log, progress=progress, should_stop=lambda: st.stop_flag,
             )

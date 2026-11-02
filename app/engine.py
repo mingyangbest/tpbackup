@@ -59,6 +59,18 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.37")
 PART = 8 * 1024 * 1024
 
+
+def part_count(size, part=PART):
+    """分片数，向上取整。
+
+    v0.2.0 及以前是 size // PART：20MB 会切成 8MB + 12MB，15.9MB 直接
+    整包单片发（total 算成 1，客户端自己认为「只有一片」）。服务端能收，
+    但末片比标准片还大，语义是错的——一旦服务端收紧 partSize 校验，
+    表现就是「小文件能传、大文件必挂」。这里只改片数，协议字段不动。
+    """
+    return max(1, -(-int(size) // part))
+
+
 # 恢复出来的文件归属：默认给 NAS 主用户（fnOS 的 1000:1000）
 RESTORE_UID = int(os.environ.get("TP_FILE_UID", "1000"))
 RESTORE_GID = int(os.environ.get("TP_FILE_GID", "1000"))
@@ -240,8 +252,8 @@ class Wopan:
     def upload(self, path, dirid, name=None, on_part=None):
         name = name or os.path.basename(path)
         size = os.path.getsize(path)
-        part = min(PART, size) if size else 1
-        total = size // PART or 1
+        part = min(PART, size) or 1
+        total = part_count(size)
         ftype = "5"
         ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
         if ext in ("jpg", "jpeg", "png", "gif", "bmp", "webp", "heic"):
@@ -591,7 +603,12 @@ def collect(w, src, cid, jobs, stats, exclude_dirs, exclude_files, rel="", log=l
                     continue
                 sz = size_of(p)
                 if sz <= 0:
-                    stats["skip"] += 1
+                    # 空文件云盘收不了（push 侧同样传不上去）。但不能再并进
+                    # skip：skip 的语义是「命中排除规则」，两者混在一起，
+                    # .gitkeep 这类占位文件被丢掉也没人看得出来。
+                    stats["empty"] += 1
+                    if len(stats["empty_names"]) < 5:
+                        stats["empty_names"].append((rel + "/" + name) if rel else name)
                     continue
                 c = cloud.get(name.lower())
                 if c and c.get("size") == sz:
@@ -611,14 +628,18 @@ def sync(store, src, cloud_chain, excludes_dirs=None, excludes_files=None,
     """执行一次同步。
 
     store  : TokenStore 实例，负责 token 的读写与续期
+    excludes_dirs / excludes_files : 排除规则。Web 界面只有一个「排除的目录 /
+             文件」输入框，runner 会把同一个列表同时喂给这两个参数——两边
+             分开只是为了引擎层能单独用（例如脚本只想排文件）。
     progress: 可选回调 fn(dict)，用于向 Web 推送实时状态
     should_stop: 可选回调，返回 True 时中止（用于 Web 上点"停止"）
     verify : 上传后做内容复核（体积全比 + ≤VERIFY_SHA256_MAX 的文件比 SHA256）。
              真实上传路径默认开启；dry-run 不经过上传，与本参数无关。
-    返回 dict(stats)
+    返回 dict(stats)；空文件（0 字节）不上传，单独计入 empty，不并入 skip。
     """
     result = {"ok": False, "reason": "", "todo": 0, "ok_n": 0, "fail": 0,
-              "exist": 0, "skip": 0, "bytes": 0, "elapsed": 0, "detail": ""}
+              "exist": 0, "skip": 0, "empty": 0, "bytes": 0, "elapsed": 0,
+              "detail": ""}
 
     if not os.path.isdir(src):
         result["reason"] = "src-missing"
@@ -671,7 +692,8 @@ def sync(store, src, cloud_chain, excludes_dirs=None, excludes_files=None,
     exd = set(DEFAULT_EXCLUDE_DIRS) | set(excludes_dirs or [])
     exf = set(DEFAULT_EXCLUDE_FILES) | set(excludes_files or [])
 
-    stats = {"todo": 0, "exist": 0, "skip": 0, "err": 0}
+    stats = {"todo": 0, "exist": 0, "skip": 0, "err": 0,
+             "empty": 0, "empty_names": []}
     jobs = []
     try:
         collect(w, src, root_id, jobs, stats, exd, exf, "", log)
@@ -682,9 +704,15 @@ def sync(store, src, cloud_chain, excludes_dirs=None, excludes_files=None,
         return result
 
     total_bytes = sum(j[3] for j in jobs)
-    result.update(todo=len(jobs), exist=stats["exist"], skip=stats["skip"])
-    log("扫描完成：待传 %d 个 / %.2f GB，已存在 %d，跳过 %d，错误 %d" % (
-        len(jobs), total_bytes / 1073741824, stats["exist"], stats["skip"], stats["err"]))
+    result.update(todo=len(jobs), exist=stats["exist"], skip=stats["skip"],
+                  empty=stats["empty"])
+    log("扫描完成：待传 %d 个 / %.2f GB，已存在 %d，跳过 %d，空文件 %d，错误 %d" % (
+        len(jobs), total_bytes / 1073741824,
+        stats["exist"], stats["skip"], stats["empty"], stats["err"]))
+    if stats["empty"]:
+        more = stats["empty"] - len(stats["empty_names"])
+        log("空文件（0 字节）不上传，云端不会有对应条目：%s%s" % (
+            "、".join(stats["empty_names"]), (" 等 %d 个" % stats["empty"]) if more > 0 else ""))
 
     if dry_run:
         for j in jobs[:20]:
@@ -840,8 +868,10 @@ def push(store, files, cloud_chain, keep=0, pattern="", dry_run=False,
               "exist": 0, "skip": 0, "bytes": 0, "elapsed": 0,
               "detail": "", "files": [], "pruned": 0}
 
-    # 先做本地校验，避免把明显的问题拖到网络层
-    items = []
+    # 先做本地校验，避免把明显的问题拖到网络层。
+    # 空文件不再整批否决（v0.2.0 的行为）：100 个文件里混一个 .gitkeep 就
+    # 一个都不传，太脆。改成单文件失败、其余照传，与 sync 的失败语义对齐。
+    items, empties = [], []
     for it in files or []:
         p, name = (it if isinstance(it, (list, tuple)) else (it.get("path"), it.get("name")))
         if not p or not os.path.isfile(p):
@@ -851,15 +881,17 @@ def push(store, files, cloud_chain, keep=0, pattern="", dry_run=False,
             return result
         sz = size_of(p)
         if sz <= 0:
-            result["reason"] = "src-empty"
-            result["detail"] = "文件为空: %s" % p
-            log("SKIP 文件为空: %s" % p)
-            return result
+            n = name or os.path.basename(p)
+            empties.append(n)
+            log("空文件跳过：%s（0 字节，云盘不收）" % n)
+            continue
         items.append((p, name or os.path.basename(p), sz))
 
     if not items:
-        result["reason"] = "no-files"
-        log("没有待推送文件")
+        result["reason"] = "src-empty" if empties else "no-files"
+        result["fail"] = len(empties)
+        result["detail"] = ("%d 个文件全为空" % len(empties)) if empties else ""
+        log("没有待推送文件" + ("（%d 个为空）" % len(empties) if empties else ""))
         return result
 
     result["todo"] = len(items)
@@ -938,6 +970,11 @@ def push(store, files, cloud_chain, keep=0, pattern="", dry_run=False,
                         "，SHA256 一致 %d 个" % hashed if hashed else ""))
         except Exception as e:
             log("复核时列目录失败（不影响已完成的上传）: %s" % e)
+
+    # 空文件记失败：显式点名要推的文件没传上去，就算没成功。
+    # 放在 prune 之前，失败的一轮不做保留策略清理。
+    if empties:
+        errs.extend("%s: 文件为空（0 字节）" % n for n in empties)
 
     pruned = 0
     if keep and pattern and not errs:
