@@ -31,6 +31,8 @@ from .engine import quota as engine_quota
 from .engine import walk_usage as engine_walk
 from .orphans import scan_orphans
 from .notify import kuma
+from .paths import ROOTS as ALLOWED_ROOTS  # 白名单解析与校验见 app/paths.py
+from .paths import within
 from apscheduler.triggers.cron import CronTrigger
 from .runner import Runner
 from .scheduler import Scheduler
@@ -46,8 +48,6 @@ WEB_USER = os.environ.get("TP_USER", "admin")
 WEB_PASS = os.environ.get("TP_PASS", "tpbackup")
 OPENLIST_DB = os.environ.get("TP_OPENLIST_DB", "")
 SYNC_OPENLIST = os.environ.get("TP_SYNC_OPENLIST", "0") == "1"
-ALLOWED_ROOTS = [p for p in os.environ.get(
-    "TP_ALLOWED_ROOTS", "/vol1,/vol00").split(",") if p]
 # 推送型任务清理旧包时永不删除的文件名，逗号分隔。比如云端目录里放了
 # 一份说明文件，不参与 --keep 的滚动清理，就把它列在这里。
 PROTECT_FILES = tuple(s.strip() for s in
@@ -267,6 +267,21 @@ def _check_cron(cron: str):
         raise HTTPException(400, "cron 表达式无效（%s）：%s" % (cron, str(e)[:120]))
 
 
+def _check_src(src: str):
+    """任务源目录：白名单 + realpath，create 与 update 共用一处。
+
+    以前 create 用字符串前缀判断（/vol10 会被 /vol1 放行、软链能逃逸），
+    update 一行都不校验——建的时候拦、改的时候不拦，等于没拦。
+    返回规范化后的真实路径，落库的就是它，避免「存的路径」和
+    「扫描器实际走的路径」是两条不同的路。
+    """
+    real = within(src)
+    if not real:
+        raise HTTPException(400, "源目录必须在 %s 之内（实际解析为 %s）" % (
+            "、".join(ALLOWED_ROOTS), os.path.realpath(src or "")))
+    return real
+
+
 @app.post("/api/tasks")
 def create_task(d: TaskIn, _=Depends(auth)):
     if not d.cloud:
@@ -274,9 +289,9 @@ def create_task(d: TaskIn, _=Depends(auth)):
     _check_cron(d.cron)
     if db.get_task_by_name(d.name):
         raise HTTPException(400, "任务名已存在")
-    if not any(os.path.isdir(r) and d.src.startswith(r) for r in ALLOWED_ROOTS):
-        raise HTTPException(400, "源目录必须在 %s 之内" % ", ".join(ALLOWED_ROOTS))
-    tid = db.upsert_task(d.dict())
+    payload = d.dict()
+    payload["src"] = _check_src(d.src)
+    tid = db.upsert_task(payload)
     scheduler.reload()
     return {"id": tid}
 
@@ -289,8 +304,12 @@ def update_task(tid: int, d: TaskIn, _=Depends(auth)):
     if not d.cloud:
         raise HTTPException(400, "云端路径不能为空")
     _check_cron(d.cron)
+    other = db.get_task_by_name(d.name)
+    if other and other["id"] != tid:
+        raise HTTPException(400, "任务名已存在")
     payload = d.dict()
     payload["id"] = tid
+    payload["src"] = _check_src(d.src)
     # 前端表单没有 mode 字段：不传就沿用原值，避免把 push 任务改回 dir
     payload["mode"] = d.mode or (cur.get("mode") or "dir")
     db.upsert_task(payload)
@@ -365,8 +384,8 @@ def push_job(d: PushIn, _=Depends(auth)):
     # 路径白名单：必须在 TP_ALLOWED_ROOTS 内，且是已存在的非空普通文件
     files = []
     for f in d.files:
-        real = os.path.realpath(f.path)
-        if not any(real == r or real.startswith(r.rstrip("/") + "/") for r in ALLOWED_ROOTS):
+        real = within(f.path)
+        if not real:
             raise HTTPException(403, "路径超出允许范围: %s" % f.path)
         if not os.path.isfile(real):
             raise HTTPException(404, "文件不存在: %s" % f.path)
@@ -675,8 +694,8 @@ def fs_list(path: str = Query(""), _=Depends(auth)):
                 out.append({"name": r, "path": r, "type": "dir", "root": True})
         return {"path": "", "entries": out}
 
-    real = os.path.realpath(path)
-    if not any(real == r or real.startswith(r.rstrip("/") + "/") for r in ALLOWED_ROOTS):
+    real = within(path)
+    if not real:
         raise HTTPException(403, "路径超出允许范围")
     if not os.path.isdir(real):
         raise HTTPException(404, "目录不存在")
@@ -835,7 +854,7 @@ def _refresh_cloud():
 
 @app.get("/api/stats/cloud")
 def stats_cloud(force: int = 0, _=Depends(auth)):
-    """每个任务在云端占多少。遍历目录不便宜，6 小时缓存 + 后台刷新。"""
+    """每个任务在云端占多少。遍历目录不便宜，24 小时缓存 + 后台刷新。"""
     now = time.time()
     stale = (not _CLOUD["data"]) or (now - _CLOUD["at"] > 24 * 3600)
     if (force or stale) and not _CLOUD["running"]:
@@ -977,8 +996,8 @@ def restore(d: RestoreIn, _=Depends(auth)):
         raise HTTPException(404, "任务不存在")
     if not d.dest:
         raise HTTPException(400, "请指定恢复到哪个目录")
-    dest = os.path.realpath(d.dest)
-    if not any(dest == r or dest.startswith(r.rstrip("/") + "/") for r in ALLOWED_ROOTS):
+    dest = within(d.dest)
+    if not dest:
         raise HTTPException(403, "目标目录超出允许范围")
     jid = secrets.token_hex(6)
     with _REST_LK:
@@ -1007,7 +1026,7 @@ def restore_status(jid: str, _=Depends(auth)):
 _ORPH, _ORPH_LK = {}, threading.Lock()
 
 
-def _do_orphans(jid, t):
+def _do_orphans(jid, t, include_excluded=False):
     st = _ORPH[jid]
     st["state"] = "running"
 
@@ -1024,15 +1043,21 @@ def _do_orphans(jid, t):
             return
         excludes = json.loads(t.get("excludes") or "[]")
         chain = _cloud_chain(t)
-        r = scan_orphans(w, t.get("src") or "", chain, excludes, log=_log)
+        if include_excluded:
+            _log("本次不套用任务的排除规则（%s），用于查被规则藏起来的残留" %
+                 ("、".join(excludes) if excludes else "无"))
+        r = scan_orphans(w, t.get("src") or "", chain, excludes, log=_log,
+                         include_excluded=include_excluded)
         st.update({"files": r["files"], "dirs": r["dirs"],
                    "total_files": r["total_files"],
                    "total_bytes": r["total_bytes"],
                    "truncated": r["truncated"], "note": r.get("note") or "",
+                   "include_excluded": bool(include_excluded),
                    "state": "done"})
-        _log("完成：孤儿文件 %d 个、孤儿目录 %d 棵，共 %d 个文件 / %.1f MB%s" % (
+        _log("完成：孤儿文件 %d 个、孤儿目录 %d 棵，共 %d 个文件 / %.1f MB%s%s" % (
             len(r["files"]), len(r["dirs"]), r["total_files"],
             r["total_bytes"] / 1048576.0,
+            "（含已排除）" if include_excluded else "",
             "（清单已截断）" if r["truncated"] else ""))
     except Exception as e:
         st["state"] = "failed"
@@ -1041,7 +1066,7 @@ def _do_orphans(jid, t):
 
 
 @app.post("/api/tasks/{tid}/orphans")
-def start_orphans(tid: int, _=Depends(auth)):
+def start_orphans(tid: int, include_excluded: int = 0, _=Depends(auth)):
     t = db.get_task(tid)
     if not t:
         raise HTTPException(404, "任务不存在")
@@ -1055,11 +1080,13 @@ def start_orphans(tid: int, _=Depends(auth)):
         _ORPH[jid] = {"id": jid, "task_id": tid, "task": t["name"],
                       "state": "queued", "files": [], "dirs": [],
                       "total_files": 0, "total_bytes": 0, "truncated": False,
+                      "include_excluded": bool(include_excluded),
                       "note": "", "error": "", "log": [],
                       "started": time.strftime("%F %T")}
         for k in list(_ORPH.keys())[:-20]:
             _ORPH.pop(k, None)
-    threading.Thread(target=_do_orphans, args=(jid, t), daemon=True).start()
+    threading.Thread(target=_do_orphans,
+                     args=(jid, t, bool(include_excluded)), daemon=True).start()
     return {"id": jid}
 
 

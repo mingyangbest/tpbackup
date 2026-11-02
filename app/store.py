@@ -57,11 +57,13 @@ class TokenStore:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"access_token": at, "refresh_token": rt,
                        "updated": time.strftime("%F %T")}, f)
-        os.replace(tmp, self.path)
+        # 先收紧临时文件的权限再换入：v0.2.0 是先 replace 再 chmod，
+        # 中间有一个极短的 644 窗口，多用户机器上等于把 refresh_token 漏出去。
         try:
-            os.chmod(self.path, 0o600)
+            os.chmod(tmp, 0o600)
         except Exception:
             pass
+        os.replace(tmp, self.path)
         if self.sync_openlist:
             self._push_openlist(at, rt)
 

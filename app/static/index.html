@@ -546,7 +546,6 @@ tbody.in>tr{animation:rowin .26s ease both}
   </div>
 </div>
 
-<!-- 孤儿扫描 -->
 <!-- 粘贴令牌 -->
 <div class="mask" id="tokenMask">
   <div class="modal" style="max-width:560px">
@@ -575,6 +574,7 @@ tbody.in>tr{animation:rowin .26s ease both}
   </div>
 </div>
 
+<!-- 孤儿扫描 -->
 <div class="mask" id="orphanMask">
   <div class="modal" style="max-width:880px">
     <div class="modal-h">
@@ -1248,15 +1248,17 @@ async function delTask(id,name){
 }
 
 /* ── 孤儿扫描（只列清单、不删除）── */
-let ORPH_TIMER = null;
-async function startOrphans(id){
+let ORPH_TIMER = null, ORPH_TID = null;
+async function startOrphans(id, includeExcluded){
+  ORPH_TID = id;
   let jid;
   try{
-    const r = await api(`/api/tasks/${id}/orphans`, {method:'POST'});
+    const q = includeExcluded ? '?include_excluded=1' : '';
+    const r = await api(`/api/tasks/${id}/orphans${q}`, {method:'POST'});
     jid = r.id;
   }catch(e){ toast('启动孤儿扫描失败：'+e.message); return; }
   const t = TASKS.find(x=>x.id===id);
-  $('orphanTitle').textContent = `孤儿扫描：${t?t.name:id}`;
+  $('orphanTitle').textContent = `孤儿扫描：${t?t.name:id}` + (includeExcluded?'（含已排除）':'');
   $('orphanBody').innerHTML = '<div class="hint">扫描中…云端目录越大越慢，请稍候。</div>';
   $('orphanMask').classList.add('on');
   clearInterval(ORPH_TIMER);
@@ -1279,14 +1281,21 @@ async function pollOrphans(jid){
   renderOrphans(d);
 }
 function renderOrphans(d){
+  const inc = !!d.include_excluded;
   const frows = (d.files||[]).map(f=>`<div class="path">${esc(f.path)} <span class="muted">${fmtB(f.size)}</span></div>`).join('')
     || '<div class="muted">无孤儿文件</div>';
   const drows = (d.dirs||[]).map(x=>`<div class="path">${esc(x.path)} <span class="muted">${x.files} 个文件 / ${fmtB(x.bytes)}</span></div>`).join('')
     || '<div class="muted">无孤儿目录</div>';
+  const swap = inc
+    ? `<div class="hint">本次未套用任务排除规则，列表里含被规则藏起来的条目。
+       <span class="lnk" onclick="startOrphans(${ORPH_TID},false)">只看未排除</span></div>`
+    : `<div class="hint">想查被排除规则藏起来、却还占着配额的云端残留（例如修好文件排除前上传的 *.tmp）？
+       <span class="lnk" onclick="startOrphans(${ORPH_TID},true)">含已排除重扫</span></div>`;
   $('orphanBody').innerHTML = `
     <div class="hint">共 ${d.total_files} 个文件 / ${fmtB(d.total_bytes)}（孤儿文件 ${(d.files||[]).length} 个，孤儿目录 ${(d.dirs||[]).length} 棵）${d.truncated?'，清单已截断，只显示前 2000 条':''}</div>
     <div class="hint">仅扫描、不删除：删之前请先核对清单，删除/镜像模式后续再做。</div>
     ${d.note?`<div class="hint">${esc(d.note)}</div>`:''}
+    ${swap}
     <h4 style="margin:12px 0 6px">孤儿文件</h4>
     <div style="max-height:260px;overflow:auto">${frows}</div>
     <h4 style="margin:12px 0 6px">孤儿目录（整棵）</h4>

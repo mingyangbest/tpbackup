@@ -21,21 +21,28 @@ from .engine import match_exclude, walk_usage
 
 
 def scan_orphans(w, src, cloud_chain, excludes, log=lambda m: None,
-                 max_entries=2000):
-    """返回 {files, dirs, total_files, total_bytes, truncated, note}。
+                 max_entries=2000, include_excluded=False):
+    """返回 {files, dirs, total_files, total_bytes, truncated, note, include_excluded}。
 
     files: [{path, size}]；dirs: [{path, files, bytes}]；
     total_* 是孤儿总量（含孤儿目录子树）；truncated 表示清单被截断。
+
+    include_excluded=True 时不套用任务的排除规则（DEFAULT_* 仍然生效）：
+    用来找「被排除规则藏起来、云端却还占着配额」的条目——v0.2.1 起文件
+    排除才真正生效，历史上传的 *.tmp 就属于这一类。这个视图同样只列不删。
     """
     files, dirs = [], []
     state = {"total_files": 0, "total_bytes": 0, "truncated": False}
-    exd = set(DEFAULT_EXCLUDE_DIRS) | set(excludes or [])
-    exf = set(DEFAULT_EXCLUDE_FILES) | set(excludes or [])
+    exd = set(DEFAULT_EXCLUDE_DIRS)
+    exf = set(DEFAULT_EXCLUDE_FILES)
+    if not include_excluded:
+        exd |= set(excludes or [])
+        exf |= set(excludes or [])
 
     cid = engine_find_dir(w, cloud_chain)
     if not cid:
         return {"files": [], "dirs": [], "total_files": 0, "total_bytes": 0,
-                "truncated": False,
+                "truncated": False, "include_excluded": include_excluded,
                 "note": "云端目录不存在（可能从未备份过）"}
 
     def walk(local_dir, dirid, rel):
@@ -77,4 +84,5 @@ def scan_orphans(w, src, cloud_chain, excludes, log=lambda m: None,
     return {"files": files, "dirs": dirs,
             "total_files": state["total_files"],
             "total_bytes": state["total_bytes"],
-            "truncated": state["truncated"], "note": ""}
+            "truncated": state["truncated"], "note": "",
+            "include_excluded": include_excluded}
