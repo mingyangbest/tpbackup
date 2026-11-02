@@ -94,10 +94,20 @@ def token_fp(w):
 
 
 def connect():
+    # 与 sync() 同一条凭据准备：load → maybe_renew（提前续期）→ 连通自检。
+    # 不自己做一套，否则「这 2 小时里 token 过期」会以 credential 报错的形式
+    # 混进第 101 片的判定里，被误读成「服务端拒绝会话」。
     store = TokenStore(os.path.join(STATE, "token.json"), log=log)
     w, res = _connect(store, log)
     if not w:
         die("云端连接失败：%s %s" % (res.get("reason"), res.get("detail")), 1)
+    inf = store.info()
+    if inf.get("remain_days") is not None:
+        log("凭据剩余 %.2f 天（updated %s，refresh=%s）" % (
+            inf["remain_days"], inf.get("updated"), inf.get("has_refresh")))
+        if inf["remain_days"] < 0.2:
+            log("⚠️ 令牌 5 小时内到期：这期间很可能发生续期，第 101 片若被拒，"
+                "归因会多一个变量（token_fp 会记下是否真的换了）")
     return w
 
 
@@ -109,6 +119,12 @@ def save_journal(j):
         json.dump(j, f, ensure_ascii=False, indent=1)
         f.flush()
         os.fsync(f.fileno())          # 先落盘，再原子换名
+    # 里面没有 token 明文，但有 token 指纹与会话标识（uniqueId/batchNo），
+    # 按 token.json 同标准收权限，不值得为它留个 644。
+    try:
+        os.chmod(tmp, 0o600)
+    except Exception:
+        pass
     os.replace(tmp, JOURNAL)
 
 
@@ -154,18 +170,35 @@ class NetError(Exception):
     """三次都拿不到响应（curl 空输出 / 连接失败）——没有观测到服务端的回答。"""
 
 
-def put_part(w, cid, size, total, uid, info, idx, retries=2):
+def put_part(w, cid, size, total, uid, info, idx, attempts=3, retry_code=False):
+    """传一片。
+
+    网络异常总是重试（三次都拿不到响应 → NetError → 判「未观测到」）。
+    retry_code=True 时，非 0000 也按 upload() 的节奏重试三次——只给续传的
+    后续片用：第 101 片才是观测点，必须一次定论；102..150 让一次 9999 抖动
+    毁掉整个 2 小时探针不划算。三次都非 0000 时返回最后一次响应，由上层
+    按协议码判「报错」，part/code 照样进 evidence，信号不会被重试掩盖。
+    """
     blob = read_part(idx)
     fields = w.part_fields(cid, NAME, size, total, uid, info, idx, len(blob))
-    last = None
-    for a in range(retries + 1):
+    last_err, last_rsp = None, None
+    for a in range(attempts):
         try:
-            return w._upload_part(fields, NAME, blob)
+            r = w._upload_part(fields, NAME, blob)
         except Exception as e:
-            last = e
-            log("  第 %d 片网络异常（第 %d/%d 次）：%s" % (idx, a + 1, retries + 1, e))
+            last_err, last_rsp = e, None
+            log("  第 %d 片网络异常（第 %d/%d 次）：%s" % (idx, a + 1, attempts, e))
+        else:
+            if r.get("code") == "0000" or not retry_code:
+                return r
+            last_err, last_rsp = None, r
+            log("  第 %d 片 code=%s（第 %d/%d 次），稍后重试" % (
+                idx, r.get("code"), a + 1, attempts))
+        if a < attempts - 1:
             time.sleep(2 * (a + 1))
-    raise NetError("第 %d 片三次都没响应：%s" % (idx, last))
+    if last_rsp is not None:
+        return last_rsp
+    raise NetError("第 %d 片 %d 次都没响应：%s" % (idx, attempts, last_err))
 
 
 def brief(r):
@@ -195,11 +228,12 @@ def cmd_start(args):
     t0 = time.time()
     for idx in range(1, first + 1):
         try:
-            r = put_part(w, cid, size, total, uid, info, idx)
+            # 这一步不是观测点，跟着 upload() 的重试走：频控 9999 不该废掉整个探针。
+            r = put_part(w, cid, size, total, uid, info, idx, retry_code=True)
         except NetError as e:
             die("%s（阶段一中止，残片留在云端，可用 cleanup 收尾）" % e, 4)
         if r.get("code") != "0000":
-            die("第 %d 片就失败了，探针中止：%s" % (idx, brief(r)), 2)
+            die("第 %d 片重试 3 次仍失败，探针中止：%s" % (idx, brief(r)), 2)
         if idx == 1 or idx % 10 == 0:
             log("  第 %d/%d 片 OK（累计 %.0fs）" % (idx, total, time.time() - t0))
 
@@ -228,7 +262,17 @@ def verify_cloud(w, j):
         return None, "三次列目录都没看到这个文件（可能列表延迟，也可能没落盘）", None
 
     if str(f.get("size")) != str(j["size"]):
-        return False, "size 不符：云端 %s / 本地 %s" % (f.get("size"), j["size"]), None
+        # 服务端可能还没把最后几片拼完（生产路径传完立刻验一直能过，这里只是保险）。
+        # 不复查就判「不完整」，会把「拼得慢」冤枉成「拼错了」。
+        log("size 不符（云端 %s / 本地 %s），10 秒后复查一次…" % (
+            f.get("size"), j["size"]))
+        time.sleep(10)
+        f2 = find_file(w, j["cloud"], j["name"])
+        if f2:
+            f = f2
+        if str(f.get("size")) != str(j["size"]):
+            return False, "size 不符（复查后）：云端 %s / 本地 %s" % (
+                f.get("size"), j["size"]), None
 
     remote = (f.get("sha256") or "").lower()
     if remote:
@@ -298,14 +342,15 @@ def cmd_resume(args):
         idx, (j["total"] - j["done"] - 1) * PART / 1048576.0))
     for k in range(idx + 1, j["total"] + 1):
         try:
-            rr = put_part(w, cid, j["size"], j["total"], j["uid"], info, k)
+            rr = put_part(w, cid, j["size"], j["total"], j["uid"], info, k,
+                          retry_code=True)
         except NetError as e:
             log(str(e))
             return finish(j, V_UNKNOWN, {"reason": "续传中断网", "part": k,
                                          "detail": str(e), "token_renewed": renewed}, t0)
         if rr.get("code") != "0000":
             return finish(j, V_ERROR, {
-                "reason": "续传中途被拒", "part": k,
+                "reason": "续传中途被拒（已重试 3 次）", "part": k,
                 "code": rr.get("code"), "msg": rr.get("msg"),
                 "token_renewed": renewed}, t0)
         if k % 10 == 0:
