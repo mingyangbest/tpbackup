@@ -5,6 +5,9 @@ health/
 # 本地凭据（从 api.conf.example 复制出来的真文件）
 api.conf
 
+# 部署时的本地配置（端口、密码、备份目录）——从 .env.example 复制出来的
+.env
+
 # Python
 __pycache__/
 *.pyc

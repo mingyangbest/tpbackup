@@ -1,0 +1,14 @@
+# 从源码构建（改代码、或不想用预构建镜像时用）。
+#
+#   docker compose -f docker-compose.build.yml up -d --build
+#
+# 端口、密码、挂载全部继承 docker-compose.yml，只把「拉镜像」换成「本地构建」，
+# 两边的配置不会各自漂移。
+services:
+  tpbackup:
+    extends:
+      file: docker-compose.yml
+      service: tpbackup
+    image: tpbackup:local
+    build:
+      context: .

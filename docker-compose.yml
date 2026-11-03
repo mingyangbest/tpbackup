@@ -1,0 +1,33 @@
+# tpbackup —— 开箱即用的 compose 文件。
+#
+#   docker compose up -d
+#
+# 就这两步：拉预构建镜像、起容器。不需要 clone 代码，不需要 build。
+# 想改端口 / 密码 / 备份哪个目录，在同目录放一个 .env（照 .env.example 抄一份），
+# 下面的 ${...} 会从那里读；不写 .env 就全用括号里的默认值。
+services:
+  tpbackup:
+    image: ${IMAGE_REF:-ghcr.io/mingyangbest/tpbackup:latest}
+    container_name: ${TP_NAME:-tpbackup}
+    restart: unless-stopped
+    ports:
+      - "${TP_PORT:-8088}:8088"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # Web 与 API 的登录凭据。默认密码只为让你先看到界面，务必改掉
+      TP_USER: ${TP_USER:-admin}
+      TP_PASS: ${TP_PASS:-tpbackup}
+      TP_DATA: /app/data
+      # 界面里能浏览、能建任务的范围。默认 /data，就是下面挂进来的那个目录
+      TP_ALLOWED_ROOTS: ${TP_ALLOWED_ROOTS:-/data}
+    volumes:
+      # 左边换成你要备份的目录，右边固定是容器里的 /data，别改
+      - ${BACKUP_DIR:-./library}:/data
+      # 任务配置、云盘令牌、运行日志、数据库
+      - ./data:/app/data
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
