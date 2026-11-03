@@ -1038,7 +1038,10 @@ def sync(store, src, cloud_chain, excludes_dirs=None, excludes_files=None,
         _drop_session(relp)
 
     all_errs = err_msgs + verify_bad
-    result.update(ok=(not all_errs), ok_n=done_n, fail=fail + len(verify_bad),
+    # verify_bad 里的文件已经计进 done_n 了：从成功数里扣掉，否则同一个文件
+    # 既是「成功」又是「失败」，报表上 ok_n + fail 会大于实际文件数。
+    result.update(ok=(not all_errs), ok_n=done_n - len(verify_bad),
+                  fail=fail + len(verify_bad),
                   bytes=done_b, elapsed=el,
                   reason="" if not all_errs else ("upload" if fail else "verify"),
                   detail=(all_errs[0][:200] if all_errs else ""))
@@ -1176,10 +1179,14 @@ def push(store, files, cloud_chain, keep=0, pattern="", dry_run=False,
             cloud = {}
             for f in w.ls(root_id):
                 if f.get("type") == 1:
-                    cloud[(f.get("name") or "")] = f
+                    # 联通云盘文件名大小写不敏感：与 sync / 孤儿扫描统一按小写
+                    # 建索引。以前这里用原始名，云端回的是 IMG.JPG、本地叫
+                    # img.jpg 时就会误报「云端未找到」，整轮判失败。
+                    cloud[(f.get("name") or "").lower()] = f
+            local = {n: p for p, n, _sz in items}
             bad = []
             for n, sz in uploaded:
-                c = cloud.get(n)
+                c = cloud.get(n.lower())
                 if not c:
                     bad.append("%s 云端未找到" % n)
                 elif str(c.get("size")) != str(sz):
@@ -1188,12 +1195,15 @@ def push(store, files, cloud_chain, keep=0, pattern="", dry_run=False,
                 errs.extend(bad)
                 log("❌ 复核未通过：" + "；".join(bad))
             else:
-                # 体积都对了，再做一次内容哈希比对（仅对有 sha256 且体积较小的文件）
+                # 体积都对了，再做一次内容哈希比对。只核对**真正传上去**的文件
+                # （以前遍历的是 items，上传失败的也会被拿去和云端旧记录比，
+                # 多出假的「内容哈希不符」）；体积上限与 sync 同口径。
                 hashed = 0
-                for p, n, sz in items:
-                    c = cloud.get(n) or {}
+                for n, sz in uploaded:
+                    p = local.get(n)
+                    c = cloud.get(n.lower()) or {}
                     remote_hash = (c.get("sha256") or "").lower()
-                    if not remote_hash:
+                    if not p or not remote_hash or sz > VERIFY_SHA256_MAX:
                         continue
                     if sha256_of(p) != remote_hash:
                         bad.append("%s 内容哈希不符（传输损坏）" % n)
