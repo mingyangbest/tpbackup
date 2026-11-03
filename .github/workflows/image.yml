@@ -41,7 +41,9 @@ jobs:
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            # latest 指默认分支的最新构建，也是打标签时发布的那一版；
+            # 想钉住某个版本就用 0.2.2 这样的数字标签。
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' || github.ref == 'refs/heads/main' }}
             type=raw,value=edge,enable=${{ github.ref_type == 'branch' }}
           labels: |
             org.opencontainers.image.title=tpbackup
