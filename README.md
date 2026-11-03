@@ -119,7 +119,7 @@ curl -u admin:<密码> http://127.0.0.1:8088/api/token
 | 现象 | 原因 |
 |---|---|
 | `docker compose pull` 报 `denied` / `unauthorized` | 镜像包没公开。改用上面的「从源码构建」，或去仓库 Packages 页面把包可见性改成 public |
-| 报 `port is already allocated` | 8088 被占了。改 `.env` 里 `TP_PORT`，或 `TPBACKUP_PORT=9000 bash install.sh` |
+| 报 `port is already allocated` | 8088 被占了。用 install.sh 装的话它会自己往后找空端口；手动 compose 装就改 `.env` 里的 `TP_PORT` |
 | 面板里浏览不到目录，或建任务提示路径不在允许范围 | 容器里只挂了 `BACKUP_DIR` 到 `/data`。要备份别的目录，改 `BACKUP_DIR` 后 `docker compose up -d`；要同时挂多个目录，照 `docker-compose.build.yml` 的写法往 `volumes` 里加，并让 `TP_ALLOWED_ROOTS` 覆盖它们 |
 
 ## 升级
