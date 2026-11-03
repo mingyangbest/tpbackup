@@ -16,6 +16,9 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# 工具本地状态（WorkBuddy 会话记忆等），不属于项目内容
+.workbuddy/
+
 # 备份残留
 *.bak-*
 *.old
