@@ -60,14 +60,18 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 PART = 8 * 1024 * 1024
 
 
-def part_count(size, part=PART):
+def part_count(size, part=None):
     """分片数，向上取整。
 
     v0.2.0 及以前是 size // PART：20MB 会切成 8MB + 12MB，15.9MB 直接
     整包单片发（total 算成 1，客户端自己认为「只有一片」）。服务端能收，
     但末片比标准片还大，语义是错的——一旦服务端收紧 partSize 校验，
     表现就是「小文件能传、大文件必挂」。这里只改片数，协议字段不动。
+
+    part 默认在**调用时**取模块常量，而不是定义时绑定：写成 part=PART 的话
+    改 PART 对已有函数无效，测试改不大、将来做可配置分片也会踩同一个坑。
     """
+    part = PART if part is None else part
     return max(1, -(-int(size) // part))
 
 
@@ -112,6 +116,46 @@ def new_unique_id():
     return "%d_%s" % (int(time.time() * 1000), "".join(
         random.choice("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
         for _ in range(6)))
+
+
+# ── 断点续传的会话快照 ──────────────────────────────────────
+# 只有「大文件」才值得续传：8MiB 以下的文件本来就一片，存会话只是多一次
+# 磁盘写。阈值可调，写死在代码里是为了默认行为可预测。
+RESUME_MIN_SIZE = int(os.environ.get("TP_RESUME_MIN_SIZE", str(16 * 1048576)))
+RESUME_ENABLED = os.environ.get("TP_RESUME", "1").lower() not in ("0", "false", "no", "off")
+# 每 32 片把 done 刷一次盘：8MiB × 32 = 256MiB，崩了最多重传这么多。
+SESSION_FLUSH_EVERY = 32
+
+
+def token_fingerprint(at):
+    """access_token 指纹。fileInfo 的加密 key 由它派生，token 一换 key 就换，
+    旧会话的 fileInfo 再也复现不出来——所以要按指纹判会话还能不能用。"""
+    return hashlib.sha256((at or "").encode()).hexdigest()[:12]
+
+
+def new_upload_session(dirid, name, size, batch_no=None):
+    """开一次上传会话，返回完整快照。续传时必须整份复用，不能只留 uniqueId。"""
+    plain = file_info_plain(dirid, name, size, batch_no=batch_no)
+    return {"dir_id": str(dirid), "name": name, "size": int(size),
+            "total": part_count(size), "uid": new_unique_id(),
+            "batch_no": plain["batchNo"], "info_plain": plain, "done": 0}
+
+
+def should_resume(size, enabled=None, threshold=None):
+    on = RESUME_ENABLED if enabled is None else enabled
+    return bool(on) and int(size) >= (RESUME_MIN_SIZE if threshold is None else threshold)
+
+
+def session_key(dir_id, rel_path, size, mtime_ns):
+    """会话键：(目标目录, 相对路径, 体积, mtime_ns)。
+
+    文件一改，mtime_ns 和 size 至少一个变，旧会话自动失效——不需要额外的
+    「文件是否变了」判断。最坏是键碰撞（同体积同 mtime 的不同内容），
+    那也只是 verify 报错，不会静默写坏：最终有 SHA256 把关。
+    纯字符串运算，不碰 sqlite，所以留在 engine 这边。
+    """
+    raw = "%s\x00%s\x00%d\x00%d" % (dir_id, rel_path, int(size), int(mtime_ns))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
 # 恢复出来的文件归属：默认给 NAS 主用户（fnOS 的 1000:1000）
@@ -293,36 +337,60 @@ class Wopan:
         raise last
 
     def upload(self, path, dirid, name=None, on_part=None):
+        """整文件上传（默认路径）。
+
+        分片循环本身搬到了 upload_parts()：续传要从第 N 片接上，两条路径
+        必须共用同一个循环，否则「续传版」和「普通版」会悄悄分叉——探针
+        已经吃过一次这种亏（手抄字段测的是自己的实现）。
+        """
         name = name or os.path.basename(path)
-        size = os.path.getsize(path)
-        part = min(PART, size) or 1
-        total = part_count(size)
-        info = enc_file_info(self.key, file_info_plain(dirid, name, size))
-        uid = new_unique_id()
-        fid, done = "", 0
-        last_err = None
+        ses = new_upload_session(dirid, name, os.path.getsize(path))
+        info = enc_file_info(self.key, ses["info_plain"])
         with open(path, "rb") as f:
-            for idx in range(1, total + 1):
-                cur = part if idx != total else size - done
-                blob = f.read(cur)
-                fields = self.part_fields(dirid, name, size, total, uid, info, idx, cur)
-                for attempt in range(3):
-                    try:
-                        r = self._upload_part(fields, name, blob)
-                        if r.get("code") != "0000":
-                            raise RuntimeError("code=%s msg=%s" % (r.get("code"), r.get("msg")))
-                        if (r.get("data") or {}).get("fid"):
-                            fid = r["data"]["fid"]
-                        last_err = None
-                        break
-                    except Exception as e:
-                        last_err = e
-                        time.sleep(2 * (attempt + 1))
-                if last_err:
-                    raise last_err
-                done += cur
-                if on_part:
-                    on_part(idx, total)
+            return self.upload_parts(ses, info, f, 1, on_part)
+
+    def upload_parts(self, ses, info, fh, start=1, on_part=None):
+        """发第 start..total 片，返回 fid（服务端最后一次给的那个）。
+
+        ses：一次上传会话的快照——uniqueId / batchNo / fileInfo 明文 / 体积 /
+        总片数。三件套必须与首片完全一致，服务端才认这是同一次上传。
+        fh ：已打开的文件句柄；start>1 时由本函数自己 seek，调用方不用管。
+        """
+        size = int(ses["size"])
+        total = int(ses["total"])
+        dirid, name, uid = ses["dir_id"], ses["name"], ses["uid"]
+        part = min(PART, size) or 1
+        start = max(1, min(int(start), total + 1))
+        done = (start - 1) * part
+        if start > 1:
+            fh.seek(done)            # 前面的片服务端已经收下，不重传
+        fid, last_err = "", None
+        for idx in range(start, total + 1):
+            cur = part if idx != total else size - done
+            blob = fh.read(cur)
+            if len(blob) != cur:
+                # 文件在传输中被改短了。继续发会让 partSize 与实际字节不符，
+                # 服务端可能收下一份拼不起来的东西，宁可当场失败。
+                raise RuntimeError("本地读取不足：第 %d 片要 %d 字节，只读到 %d"
+                                   % (idx, cur, len(blob)))
+            fields = self.part_fields(dirid, name, size, total, uid, info, idx, cur)
+            for attempt in range(3):
+                try:
+                    r = self._upload_part(fields, name, blob)
+                    if r.get("code") != "0000":
+                        raise RuntimeError("code=%s msg=%s" % (r.get("code"), r.get("msg")))
+                    if (r.get("data") or {}).get("fid"):
+                        fid = r["data"]["fid"]
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    time.sleep(2 * (attempt + 1))
+            if last_err:
+                raise last_err
+            done += cur
+            if on_part:
+                on_part(idx, total)
         return fid
 
     def part_fields(self, dirid, name, size, total, uid, info, idx, part_size):
@@ -366,6 +434,74 @@ class Wopan:
             return json.loads(r.stdout)
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+# ── 带断点续传的上传（job 层，会话存储由调用方注入）──────────
+def upload_resumable(w, sessions, skey, path, dirid, name=None,
+                     log=lambda m: None, on_part=None):
+    """上传一个文件，能从上次中断的片号接上。
+
+    分层：Wopan 只懂协议（upload_parts），会话的存取、判废、落盘全在这里，
+    Wopan 不知道 sqlite 的存在。会话存的是**整份快照**（uniqueId + batchNo +
+    fileInfo 明文），只存 uniqueId 续不上——服务端还比 batchNo 与加密后的
+    fileInfo。
+
+    成功时**不删会话**：要等 verify 通过才删。删早了，一旦哈希不符就只能
+    从零重传；留着才能按「证伪」处理。
+    """
+    name = name or os.path.basename(path)
+    st = os.stat(path)
+    size, mtime_ns = st.st_size, st.st_mtime_ns
+    fp = token_fingerprint(w.at)
+
+    s = sessions.get(skey)
+    if s:
+        why = ""
+        if int(s["size"]) != size or int(s["mtime_ns"]) != mtime_ns:
+            why = "文件已变（体积或 mtime 动了）"
+        elif str(s["dir_id"]) != str(dirid):
+            why = "目标目录变了"
+        elif s.get("token_fp") and s["token_fp"] != fp:
+            # token 一换，fileInfo 的加密 key 也跟着换。虽然我们存的是明文、
+            # 能重加密，但会话是不是绑旧 token 服务端没给答案——按保守策略
+            # 重开一次，与探针报告里那条「未验证分支」保持一致。
+            why = "token 已轮换（%s → %s）" % (s["token_fp"], fp)
+        if why:
+            log("放弃旧会话 %s：%s，重开一次上传" % (name, why))
+            sessions.drop(skey)
+            s = None
+
+    if not s:
+        s = new_upload_session(dirid, name, size)
+        s.update(skey=skey, mtime_ns=mtime_ns, token_fp=fp, done=0)
+        sessions.save(s)
+        start = 1
+    else:
+        start = min(int(s["done"]) + 1, int(s["total"]) + 1)
+        if start > 1:
+            log("续传 %s：从第 %d/%d 片接上（会话更新于 %s）" % (
+                name, start, s["total"], s.get("updated_at") or "-"))
+
+    # 明文重加密：存的 info_plain，key 由当前 token 派生
+    info = enc_file_info(w.key, s["info_plain"])
+
+    def prog(idx, total):
+        s["done"] = idx
+        if idx % SESSION_FLUSH_EVERY == 0 or idx == total:
+            sessions.save(s)
+        if on_part:
+            on_part(idx, total)
+
+    try:
+        with open(path, "rb") as f:
+            fid = w.upload_parts(s, info, f, start, prog)
+    except Exception:
+        s["done"] = min(int(s.get("done") or 0), int(s["total"]))
+        sessions.save(s)          # 保住已完成的进度，下次接着来
+        raise
+    s["done"] = int(s["total"])
+    sessions.save(s)
+    return fid
 
 
 # ── 目录链与扫描 ────────────────────────────────────────────
@@ -665,7 +801,7 @@ def collect(w, src, cid, jobs, stats, exclude_dirs, exclude_files, rel="", log=l
 # ── 一次完整同步 ────────────────────────────────────────────
 def sync(store, src, cloud_chain, excludes_dirs=None, excludes_files=None,
          dry_run=False, limit=0, workers=4, log=lambda m: None,
-         progress=None, should_stop=None, verify=True):
+         progress=None, should_stop=None, verify=True, sessions=None):
     """执行一次同步。
 
     store  : TokenStore 实例，负责 token 的读写与续期
@@ -676,6 +812,9 @@ def sync(store, src, cloud_chain, excludes_dirs=None, excludes_files=None,
     should_stop: 可选回调，返回 True 时中止（用于 Web 上点"停止"）
     verify : 上传后做内容复核（体积全比 + ≤VERIFY_SHA256_MAX 的文件比 SHA256）。
              真实上传路径默认开启；dry-run 不经过上传，与本参数无关。
+    sessions: 可选 SessionStore。给了且文件够大（TP_RESUME_MIN_SIZE，默认
+             16MiB）才走断点续传；不给则每个文件都是一次全新会话，
+             行为与 v0.2.1 一致。
     返回 dict(stats)；空文件（0 字节）不上传，单独计入 empty，不并入 skip。
     """
     result = {"ok": False, "reason": "", "todo": 0, "ok_n": 0, "fail": 0,
@@ -767,6 +906,15 @@ def sync(store, src, cloud_chain, excludes_dirs=None, excludes_files=None,
     done_n, done_b, fail = 0, 0, 0
     err_msgs, failed, succeeded = [], [], []
     lock = threading.Lock()
+    skeys = {}                    # relp -> 会话键（只有走了续传的文件才有）
+
+    if sessions is not None and RESUME_ENABLED:
+        try:
+            n = sessions.prune()
+            if n:
+                log("清理了 %d 条过期的上传会话" % n)
+        except Exception as e:
+            log("清理过期会话失败（不影响本次同步）: %s" % e)
 
     def work(j):
         nonlocal done_n, done_b, fail
@@ -775,7 +923,15 @@ def sync(store, src, cloud_chain, excludes_dirs=None, excludes_files=None,
             return False
         t = time.time()
         try:
-            w.upload(p, cid, name)
+            # 大文件走会话续传，小文件照旧：8MiB 以下本来就只有一片，
+            # 为它存会话纯属多一次磁盘写，没有收益。
+            if sessions is not None and should_resume(sz):
+                skey = session_key(cid, relp, sz, os.stat(p).st_mtime_ns)
+                upload_resumable(w, sessions, skey, p, cid, name, log=log)
+                with lock:
+                    skeys[relp] = (skey, str(cid))
+            else:
+                w.upload(p, cid, name)
             el = time.time() - t
             with lock:
                 done_n += 1
@@ -823,6 +979,21 @@ def sync(store, src, cloud_chain, excludes_dirs=None, excludes_files=None,
     #   体积全比；云端返回了 sha256 且文件 ≤64MB 的再比内容哈希。
     # 大文件只比体积是刻意的取舍——全量哈希会让 1GB 批次的 I/O 翻倍。
     verify_bad, hashed = [], 0
+
+    def _drop_session(relp):
+        """复核判负 → 丢掉会话（已证伪，留着下次还会失败）。
+        拿不到校验数据（列目录抛异常）不走这里：那是 transient，
+        留着下次直接续，不用把 1.2GiB 再传一遍。"""
+        v = skeys.pop(relp, None)
+        k = v[0] if v else None
+        if k and sessions is not None:
+            try:
+                sessions.drop(k)
+            except Exception as e:
+                log("删除上传会话失败（不影响结果）: %s" % e)
+
+    unknown_dirs = set()          # 列目录失败的目录：里面的会话一律保留
+
     if verify and succeeded:
         by_dir = {}
         for j in succeeded:
@@ -833,14 +1004,17 @@ def sync(store, src, cloud_chain, excludes_dirs=None, excludes_files=None,
                          for f in w.ls(cid2) if f.get("type") == 1}
             except Exception as e:
                 log("复核时列目录失败（不影响已完成上传）: %s" % e)
+                unknown_dirs.add(str(cid2))
                 continue
             for (p2, _c, name2, sz2, relp2) in jlist:
                 c = cloud.get(name2.lower())
                 if not c:
                     verify_bad.append("%s 云端未找到" % relp2)
+                    _drop_session(relp2)
                     continue
                 if str(c.get("size")) != str(sz2):
                     verify_bad.append("%s 体积不符 本地=%s 云端=%s" % (relp2, sz2, c.get("size")))
+                    _drop_session(relp2)
                     continue
                 rh = (c.get("sha256") or "").lower()
                 if rh and sz2 <= VERIFY_SHA256_MAX:
@@ -848,11 +1022,20 @@ def sync(store, src, cloud_chain, excludes_dirs=None, excludes_files=None,
                         hashed += 1
                     else:
                         verify_bad.append("%s 内容哈希不符（传输损坏）" % relp2)
+                        _drop_session(relp2)
         if verify_bad:
             log("❌ 复核未通过 %d 项：%s" % (len(verify_bad), "；".join(verify_bad[:5])))
         else:
             log("✅ 复核通过：%d 个文件%s" % (done_n,
                 ("，SHA256 一致 %d 个" % hashed) if hashed else ""))
+
+    # 还剩着的会话：已确认过的删掉，别在库里堆「早就传完了」的行。
+    # 列目录失败的目录跳过——那批文件的状态我们根本没看到，
+    # 删了就等于把「下次直接续」的机会扔掉。
+    for relp in list(skeys):
+        if skeys[relp][1] in unknown_dirs:
+            continue
+        _drop_session(relp)
 
     all_errs = err_msgs + verify_bad
     result.update(ok=(not all_errs), ok_n=done_n, fail=fail + len(verify_bad),
@@ -898,12 +1081,13 @@ def _connect(store, log):
 
 
 def push(store, files, cloud_chain, keep=0, pattern="", dry_run=False,
-         log=lambda m: None, verify=True, protect=()):
+         log=lambda m: None, verify=True, protect=(), sessions=None):
     """把一批本地文件推送到云端目录（同名覆盖）。
 
     files : [(本地绝对路径, 云端文件名或 None), ...]
     比 sync() 少一个"扫描目录"的过程——宿主机脚本已经把包装好了，
     这里只负责传输、校验、保留策略。凭证与重试逻辑与 sync() 共用。
+    sessions : 可选 SessionStore，给了就对大文件启用断点续传（同 sync）。
     """
     result = {"ok": False, "reason": "", "todo": 0, "ok_n": 0, "fail": 0,
               "exist": 0, "skip": 0, "bytes": 0, "elapsed": 0,
@@ -959,10 +1143,22 @@ def push(store, files, cloud_chain, keep=0, pattern="", dry_run=False,
     log("云端根目录 id=%s" % root_id)
 
     ok_n, done_b, errs, uploaded = 0, 0, [], []
+    skeys = {}                    # 文件名 -> 会话键（仅走续传的文件）
+    if sessions is not None and RESUME_ENABLED:
+        try:
+            sessions.prune()
+        except Exception as e:
+            log("清理过期会话失败（不影响本次推送）: %s" % e)
+
     for p, n, sz in items:
         t = time.time()
         try:
-            w.upload(p, root_id, n)
+            if sessions is not None and should_resume(sz):
+                skey = session_key(root_id, n, sz, os.stat(p).st_mtime_ns)
+                upload_resumable(w, sessions, skey, p, root_id, n, log=log)
+                skeys[n] = skey
+            else:
+                w.upload(p, root_id, n)
             el = time.time() - t
             ok_n += 1
             done_b += sz
@@ -974,6 +1170,7 @@ def push(store, files, cloud_chain, keep=0, pattern="", dry_run=False,
             log("❌ 上传失败 %s: %s" % (n, e))
 
     # 复核：云端体积必须一致；云端若返回 sha256，再比内容哈希（更强）
+    ls_failed = False
     if verify and uploaded:
         try:
             cloud = {}
@@ -1011,6 +1208,19 @@ def push(store, files, cloud_chain, keep=0, pattern="", dry_run=False,
                         "，SHA256 一致 %d 个" % hashed if hashed else ""))
         except Exception as e:
             log("复核时列目录失败（不影响已完成的上传）: %s" % e)
+            ls_failed = True
+
+    # 会话收尾：传成功的、以及复核明确判负的，都删；只有「没拿到校验数据」
+    # （列目录抛异常）才留着——那是 transient，留着下次直接续，不用重传。
+    if skeys:
+        if ls_failed:
+            log("复核数据不可用，保留 %d 个上传会话供下次续传" % len(skeys))
+        else:
+            for n in list(skeys):
+                try:
+                    sessions.drop(skeys.pop(n))
+                except Exception as e:
+                    log("删除上传会话失败（不影响结果）: %s" % e)
 
     # 空文件记失败：显式点名要推的文件没传上去，就算没成功。
     # 放在 prune 之前，失败的一轮不做保留策略清理。

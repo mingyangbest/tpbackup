@@ -36,7 +36,7 @@ from .paths import within
 from apscheduler.triggers.cron import CronTrigger
 from .runner import Runner
 from .scheduler import Scheduler
-from .store import DB, TokenStore
+from .store import DB, SessionStore, TokenStore
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -58,6 +58,9 @@ os.makedirs(os.path.join(DATA, "state"), exist_ok=True)
 os.makedirs(os.path.join(DATA, "logs"), exist_ok=True)
 
 db = DB(os.path.join(DATA, "tpbackup.db"))
+# 断点续传的会话账本。sync 走 runner 注入，push 走这里注入——
+# 两处都注入，engine 就不用反向依赖 store。
+sessions = SessionStore(os.path.join(DATA, "tpbackup.db"))
 store = TokenStore(os.path.join(DATA, "state", "token.json"),
                    openlist_db=OPENLIST_DB or None,
                    sync_openlist=SYNC_OPENLIST, log=log.info)
@@ -423,7 +426,7 @@ def push_job(d: PushIn, _=Depends(auth)):
     try:
         res = engine_push(store=store, files=files, cloud_chain=cloud,
                           keep=d.keep, pattern=d.pattern, dry_run=d.dry_run,
-                          log=logf, protect=PROTECT_FILES)
+                          log=logf, protect=PROTECT_FILES, sessions=sessions)
     except Exception as e:
         res = {"ok": False, "reason": "exception", "detail": str(e)[:300],
                "todo": len(files), "ok_n": 0, "fail": len(files),

@@ -195,6 +195,27 @@ CREATE TABLE IF NOT EXISTS runs (
   log TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id, id DESC);
+
+-- 分片上传会话：断点续传的账本。
+-- 一行 = 一次「uniqueId + batchNo + fileInfo」的上传会话，必须整份留住：
+-- 只存 uniqueId 续不上（服务端还比 batchNo 和加密后的 fileInfo）。
+-- info_plain 存明文、不存密文：密文是拿 access_token 派生的 key 加密的，
+-- token 一换就再也解不出原来的 fileInfo，探针已经踩过这条路。
+CREATE TABLE IF NOT EXISTS upload_sessions (
+  skey TEXT PRIMARY KEY,
+  dir_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  mtime_ns INTEGER NOT NULL,
+  total INTEGER NOT NULL,
+  done INTEGER DEFAULT 0,
+  uid TEXT NOT NULL,
+  batch_no TEXT NOT NULL,
+  info_plain TEXT NOT NULL,
+  token_fp TEXT DEFAULT '',
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_updated ON upload_sessions(updated_at);
 """
 
 # 老库补列：SQLite 没有 IF NOT EXISTS 的 ADD COLUMN，只能逐列尝试
@@ -366,3 +387,91 @@ class DB:
             return True
         except Exception:
             return False
+
+
+# ── 断点续传会话（job 层用，engine 不碰 sqlite）───────────────
+SESSION_TTL = 24 * 3600          # 秒。只证过 2h6m 的间隔，24h 是保守取值
+
+
+class SessionStore:
+    """分片上传会话的持久化。
+
+    与 DB 共用同一个 sqlite 文件，但单独开连接。注意库是 rollback journal
+    （不是 WAL），写会锁全库：所以写入必须串行且短——_lk 只罩住一次
+    UPDATE/INSERT，绝不跨网络调用持有。engine 侧每 32 片刷一次，就是这个原因。
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self._lk = threading.Lock()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with self._conn() as c:
+            c.executescript(SCHEMA)
+
+    def _conn(self):
+        c = sqlite3.connect(self.path, timeout=20)
+        c.row_factory = sqlite3.Row
+        return c
+
+    def get(self, skey, ttl=SESSION_TTL):
+        """取会话。超过 TTL 直接删掉并返回 None（懒清理，不另起定时器）。"""
+        with self._conn() as c:
+            r = c.execute("select * from upload_sessions where skey=?",
+                          (skey,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        if ttl and d.get("updated_at"):
+            try:
+                age = time.time() - time.mktime(
+                    time.strptime(d["updated_at"], "%Y-%m-%d %H:%M:%S"))
+            except Exception:
+                age = None
+            if age is not None and age > ttl:
+                self.drop(skey)
+                return None
+        try:
+            d["info_plain"] = json.loads(d["info_plain"])
+        except Exception:
+            self.drop(skey)
+            return None
+        return d
+
+    def save(self, d):
+        now = time.strftime("%F %T")
+        info = d["info_plain"]
+        if not isinstance(info, str):
+            info = json.dumps(info, ensure_ascii=False, separators=(",", ":"))
+        with self._lk, self._conn() as c:
+            c.execute("""insert into upload_sessions
+                         (skey,dir_id,name,size,mtime_ns,total,done,uid,batch_no,
+                          info_plain,token_fp,updated_at)
+                         values(?,?,?,?,?,?,?,?,?,?,?,?)
+                         on conflict(skey) do update set
+                           dir_id=excluded.dir_id, name=excluded.name,
+                           size=excluded.size, mtime_ns=excluded.mtime_ns,
+                           total=excluded.total, done=excluded.done,
+                           uid=excluded.uid, batch_no=excluded.batch_no,
+                           info_plain=excluded.info_plain,
+                           token_fp=excluded.token_fp,
+                           updated_at=excluded.updated_at""",
+                      (d["skey"], str(d["dir_id"]), d["name"], int(d["size"]),
+                       int(d["mtime_ns"]), int(d["total"]), int(d.get("done") or 0),
+                       d["uid"], d["batch_no"], info,
+                       d.get("token_fp") or "", now))
+
+    def drop(self, skey):
+        with self._lk, self._conn() as c:
+            c.execute("delete from upload_sessions where skey=?", (skey,))
+
+    def prune(self, ttl=SESSION_TTL):
+        """清掉过期行。sync/push 开始时调一次即可，不必逐个定时。"""
+        with self._lk, self._conn() as c:
+            cur = c.execute(
+                "delete from upload_sessions where updated_at < datetime('now','localtime',?)",
+                ("-%d seconds" % int(ttl),))
+            return cur.rowcount
+
+    def count(self):
+        with self._conn() as c:
+            return c.execute("select count(*) from upload_sessions").fetchone()[0]

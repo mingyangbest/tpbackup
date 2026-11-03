@@ -163,7 +163,8 @@ def test_runner_feeds_excludes_to_both_sides(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod.engine, "sync", fake_sync)
 
     class FakeDB:
-        def __init__(self):
+        def __init__(self, path):
+            self.path = path          # Runner 会拿它开续传会话表
             self.finished = []
 
         def start_run(self, tid, name):
@@ -176,7 +177,7 @@ def test_runner_feeds_excludes_to_both_sides(tmp_path, monkeypatch):
             pass
 
     logs = tmp_path / "logs"
-    r = runner_mod.Runner(FakeDB(), object(), str(logs))
+    r = runner_mod.Runner(FakeDB(str(tmp_path / "tp.db")), object(), str(logs))
     task = {"id": 1, "name": "t", "src": str(tmp_path), "cloud": '["A"]',
             "excludes": '["*.tmp", "#recycle"]', "workers": 2, "mode": "dir"}
     assert r.start(task) == 1

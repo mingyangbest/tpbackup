@@ -9,6 +9,7 @@ import traceback
 
 from . import engine
 from .notify import kuma
+from .store import SessionStore
 
 
 class RunState:
@@ -43,6 +44,9 @@ class Runner:
     def __init__(self, db, store, logs_dir, on_change=None):
         self.db = db
         self.store = store
+        # 断点续传的账本：与 DB 同一个 sqlite 文件，单独连接。
+        # 放在这里注入给 engine，engine 自己不认识 sqlite。
+        self.sessions = SessionStore(db.path)
         self.logs_dir = logs_dir
         self.on_change = on_change
         self._states = {}
@@ -142,6 +146,7 @@ class Runner:
                 excludes_dirs=excludes, excludes_files=excludes,
                 dry_run=dry_run, workers=task.get("workers") or 4,
                 log=log, progress=progress, should_stop=lambda: st.stop_flag,
+                sessions=self.sessions,
             )
 
             if st.stop_flag:
