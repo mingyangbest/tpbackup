@@ -71,6 +71,49 @@ def part_count(size, part=PART):
     return max(1, -(-int(size) // part))
 
 
+# ── 上传会话的三件套：fileInfo 明文 / 密文 / uniqueId ───────────
+# 抽成模块级函数的理由：断点续传探针（tools/probe_resume.py）必须走
+# 生产路径同一份构造。探针自己手抄字段，测到的就是探针自己的实现。
+IMAGE_EXT = {"jpg", "jpeg", "png", "gif", "bmp", "webp", "heic"}
+VIDEO_EXT = {"mp4", "mov", "mkv", "avi", "flv", "wmv"}
+
+
+def file_type_of(name):
+    """云盘的文件类型位：1=图片 2=视频 5=其它。只影响云端展示，不影响字节传输。"""
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext in IMAGE_EXT:
+        return "1"
+    if ext in VIDEO_EXT:
+        return "2"
+    return "5"
+
+
+def file_info_plain(dirid, name, size, batch_no=None):
+    """fileInfo 的明文（上传时再加密）。
+
+    batchNo 是「一次上传会话」的标识：续传必须原样复用，否则服务端会当成
+    另一次上传。它原来在 upload() 里顺手取当前时间，探针要跨小时续传，
+    这个值必须能被外部固定下来，所以单独提出来。
+    """
+    return {"spaceType": "0", "directoryId": str(dirid),
+            "batchNo": batch_no or time.strftime("%Y%m%d%H%M%S"),
+            "fileName": name, "fileSize": size,
+            "fileType": file_type_of(name)}
+
+
+def enc_file_info(key, plain):
+    """fileInfo 密文。key = access_token 前 16 字节派生——token 换了必须重加密。"""
+    return base64.b64encode(aes_enc(json.dumps(
+        plain, ensure_ascii=False, separators=(",", ":")).encode(), key)).decode()
+
+
+def new_unique_id():
+    """一次上传会话的 uniqueId：毫秒时间戳 + 6 位随机字母。"""
+    return "%d_%s" % (int(time.time() * 1000), "".join(
+        random.choice("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        for _ in range(6)))
+
+
 # 恢复出来的文件归属：默认给 NAS 主用户（fnOS 的 1000:1000）
 RESTORE_UID = int(os.environ.get("TP_FILE_UID", "1000"))
 RESTORE_GID = int(os.environ.get("TP_FILE_GID", "1000"))
@@ -254,30 +297,15 @@ class Wopan:
         size = os.path.getsize(path)
         part = min(PART, size) or 1
         total = part_count(size)
-        ftype = "5"
-        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-        if ext in ("jpg", "jpeg", "png", "gif", "bmp", "webp", "heic"):
-            ftype = "1"
-        elif ext in ("mp4", "mov", "mkv", "avi", "flv", "wmv"):
-            ftype = "2"
-        info = base64.b64encode(aes_enc(json.dumps({
-            "spaceType": "0", "directoryId": str(dirid),
-            "batchNo": time.strftime("%Y%m%d%H%M%S"), "fileName": name,
-            "fileSize": size, "fileType": ftype,
-        }, ensure_ascii=False, separators=(",", ":")).encode(), self.key)).decode()
-        uid = "%d_%s" % (int(time.time() * 1000), "".join(
-            random.choice("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
-            for _ in range(6)))
+        info = enc_file_info(self.key, file_info_plain(dirid, name, size))
+        uid = new_unique_id()
         fid, done = "", 0
         last_err = None
         with open(path, "rb") as f:
             for idx in range(1, total + 1):
                 cur = part if idx != total else size - done
                 blob = f.read(cur)
-                fields = {"uniqueId": uid, "accessToken": self.at, "fileName": name,
-                          "psToken": "undefined", "fileSize": str(size), "totalPart": str(total),
-                          "channel": "wocloud", "directoryId": str(dirid), "fileInfo": info,
-                          "partSize": str(cur), "partIndex": str(idx)}
+                fields = self.part_fields(dirid, name, size, total, uid, info, idx, cur)
                 for attempt in range(3):
                     try:
                         r = self._upload_part(fields, name, blob)
@@ -296,6 +324,19 @@ class Wopan:
                 if on_part:
                     on_part(idx, total)
         return fid
+
+    def part_fields(self, dirid, name, size, total, uid, info, idx, part_size):
+        """单个分片的 multipart 字段。
+
+        **只有这一份构造**：upload() 与 tools/probe_resume.py 都调它。
+        探针如果自己手抄一份字段，测到的就是探针自己的实现，阳性结果
+        迁移不到真实续传路径上——这是我把这段抽出来的唯一原因。
+        accessToken 每次现取，跑到一半 token 续期也不影响后续片。
+        """
+        return {"uniqueId": uid, "accessToken": self.at, "fileName": name,
+                "psToken": "undefined", "fileSize": str(size), "totalPart": str(total),
+                "channel": "wocloud", "directoryId": str(dirid), "fileInfo": info,
+                "partSize": str(part_size), "partIndex": str(idx)}
 
     def _upload_part(self, fields, filename, blob):
         """用 curl 发 multipart：实测比 urllib 手拼稳定。
