@@ -76,7 +76,24 @@ fi
 mkdir -p "$BACKUP_DIR" || die "建不了备份目录 $BACKUP_DIR"
 BACKUP_DIR=$(cd "$BACKUP_DIR" && pwd)
 
-# ── 3. 端口 ────────────────────────────────────────────────
+# ── 3. 别把别人的容器顶掉 ──────────────────────────────────
+# 同名容器存在、又不是本目录装的，说明这台机器上已经有一个 tpbackup 在跑。
+# 直接 up 会把它整个替换掉（实测：把生产实例的容器换成了新镜像新端口），
+# 所以这里停下来让人自己决定。
+if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
+  owner=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$NAME" 2>/dev/null || true)
+  here=$(pwd -P)
+  if [ "$owner" != "$here" ]; then
+    say ""
+    say "这台机器上已经有一个叫 $NAME 的容器：${owner:-不是 compose 建的}"
+    say "继续装会把它替换掉，所以先停在这儿。两个办法："
+    say "  · 只是想升级它 → cd ${owner:-<它所在的目录>} && docker compose pull && docker compose up -d"
+    say "  · 想装第二个实例 → TPBACKUP_NAME=tpbackup2 TPBACKUP_PORT=8090 bash install.sh"
+    die "容器名冲突"
+  fi
+fi
+
+# ── 4. 端口 ────────────────────────────────────────────────
 # 能连上就说明有人在监听（子 shell 退出时 fd 自动关）
 port_taken() {
   (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
@@ -92,6 +109,9 @@ if [ "$EXISTING" = "0" ] && port_taken "$PORT"; then
   PORT="$found"
   say "改用 $PORT。"
 fi
+
+# 项目名跟着容器名走，免得两个安装目录同名时共用同一个 compose 项目
+CP="$COMPOSE -p $NAME"
 
 # ── 4. 写 compose 与 .env ──────────────────────────────────
 step "写配置文件到 $dir"
@@ -143,6 +163,8 @@ BACKUP_DIR=$BACKUP_DIR
 TP_ALLOWED_ROOTS=/data
 TP_PORT=$PORT
 TP_NAME=$NAME
+# 让 docker compose 认这个名字做项目名，换个目录也不会和别的实例串
+COMPOSE_PROJECT_NAME=$NAME
 IMAGE_REF=$IMAGE_REF
 ENV
 else
@@ -160,7 +182,7 @@ mkdir -p data
 step "拉镜像 $IMAGE_REF"
 if [ "${TPBACKUP_SKIP_PULL:-0}" = "1" ]; then
   say "跳过拉取（TPBACKUP_SKIP_PULL=1），直接用本地镜像。"
-elif ! $COMPOSE pull; then
+elif ! $CP pull; then
   # 离线、或用的是自己 build 的镜像时，本地有就能继续
   if docker image inspect "$IMAGE_REF" >/dev/null 2>&1; then
     say "拉取失败，但本地已经有 $IMAGE_REF，用它继续。"
@@ -178,7 +200,7 @@ elif ! $COMPOSE pull; then
 fi
 
 step "启动容器"
-$COMPOSE up -d
+$CP up -d
 
 step "等待服务就绪"
 ok=""

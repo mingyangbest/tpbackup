@@ -34,7 +34,7 @@ bash install.sh
 TPBACKUP_DIR=/vol1/docker/tpbackup TPBACKUP_PORT=9000 bash install.sh
 ```
 
-重复运行不会重置密码、不会动 `data/`，升级时也可以直接重跑。
+重复运行不会重置密码、不会动 `data/`，升级时也可以直接重跑。机器上已经有一个同名实例时，脚本会停下来告诉你它在哪个目录，不会把正在跑的那个替换掉。
 
 ### 次快：compose 文件
 
