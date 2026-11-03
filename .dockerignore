@@ -1,0 +1,13 @@
+# 构建上下文排除：不进镜像的东西
+# 部署目录里的手改留底（engine.py.bak-20261028-2046 这类），Python 不 import，
+# 但 COPY app ./app 会全拷进镜像。放这里比靠记性在构建前手动移走可靠。
+app/*.bak-*
+
+# 字节码缓存：源码编译产生的 .pyc 会被 COPY 带进镜像，
+# 与 PYTHONDONTWRITEBYTECODE=1 的意图相反。
+**/__pycache__
+**/*.pyc
+
+# 数据与状态目录不该进镜像（compose 里是 bind mount）
+data/
+state/
