@@ -31,6 +31,8 @@ resume 续 101..150（400MiB）。
              → 服务端假装收下，先查它对跨会话分片的处理，再定方案
   4 未观测到 网络三次都失败 / 拿不到内容哈希：**没有结论**，别当成拒收
   1 脚本自身错误（凭据、文件、参数）
+  91 探针自身缺陷：跑完了但 journal 的 done ≠ total（判定结果仍然有效，
+             缺的是账本那一笔）。见文件末尾的回归断言。
 
 SHA256 从哪来（写死，不含糊）：优先用云端列表返回的 sha256 字段；
 该字段缺失时，**把文件下载回来自己算**（1.2GiB 一次可接受），报告里记
@@ -65,6 +67,13 @@ JOURNAL_VERSION = 1
 
 V_ACCEPT, V_ERROR, V_INCOMPLETE, V_UNKNOWN = "接受", "报错", "不完整", "未观测到"
 EXIT_CODE = {V_ACCEPT: 0, V_ERROR: 2, V_INCOMPLETE: 3, V_UNKNOWN: 4}
+# 探针自身缺陷（不是服务端结论）单独一个码：报告里要区分「服务端怎么答」和
+# 「我们自己的账本记错了」，混用会让下一次判读把缺陷当成结论。
+EXIT_ASSERT = 91
+
+# 每 32 片把 done 刷一次盘。1.2GiB 一轮 ~70s，32 片约 15s——
+# 崩在这一刻最多重传 256MiB，比每片 fsync 划算，也比只在 finish 刷一次安全。
+DONE_FLUSH_EVERY = 32
 
 
 def log(msg):
@@ -322,6 +331,7 @@ def cmd_resume(args):
     info = enc_file_info(w.key, plain)       # 用当前 key 重加密，batchNo 不变
 
     idx = j["done"] + 1
+    done = j["done"]               # 账本口径：最后一个确认成功的片号
     log("关键一步：第 %d 片，沿用 uniqueId=%s / batchNo=%s（阶段一于 %s 启动）" % (
         idx, j["uid"], plain["batchNo"], j["started"]))
     t0 = time.time()
@@ -330,13 +340,14 @@ def cmd_resume(args):
     except NetError as e:
         log(str(e))
         return finish(j, V_UNKNOWN, {"reason": "关键片无响应", "detail": str(e),
-                                     "token_renewed": renewed}, t0)
+                                     "token_renewed": renewed}, t0, done=done)
     log("第 %d 片返回：%s" % (idx, brief(r)))
 
     if r.get("code") != "0000":
         return finish(j, V_ERROR, {
             "reason": "关键片被拒", "part": idx, "code": r.get("code"), "msg": r.get("msg"),
-            "token_renewed": renewed}, t0)
+            "token_renewed": renewed}, t0, done=done)
+    done = idx
 
     log("第 %d 片被接受，继续把剩下的片传完（%.0f MB）…" % (
         idx, (j["total"] - j["done"] - 1) * PART / 1048576.0))
@@ -347,12 +358,21 @@ def cmd_resume(args):
         except NetError as e:
             log(str(e))
             return finish(j, V_UNKNOWN, {"reason": "续传中断网", "part": k,
-                                         "detail": str(e), "token_renewed": renewed}, t0)
+                                         "detail": str(e), "token_renewed": renewed},
+                          t0, done=done)
         if rr.get("code") != "0000":
             return finish(j, V_ERROR, {
                 "reason": "续传中途被拒（已重试 3 次）", "part": k,
                 "code": rr.get("code"), "msg": rr.get("msg"),
-                "token_renewed": renewed}, t0)
+                "token_renewed": renewed}, t0, done=done)
+        done = k
+        j["done"] = done
+        # 定期刷盘：进程被 OOM/重启打断时，下一次 resume 从这里接着走，
+        # 而不是退回阶段一的 100 重传一遍已经传过的片。
+        if done % DONE_FLUSH_EVERY == 0:
+            save_journal(j)
+            log("  进度已落盘：done=%d/%d（累计 %.0fs）" % (
+                done, j["total"], time.time() - t0))
         if k % 10 == 0:
             log("  第 %d/%d 片 OK（累计 %.0fs）" % (k, j["total"], time.time() - t0))
 
@@ -368,7 +388,16 @@ def cmd_resume(args):
                                     "hash_source": source}, t0)
 
 
-def finish(j, verdict, evidence, t0):
+def finish(j, verdict, evidence, t0, done=None):
+    """收尾：先把账本写对，再落判定。
+
+    done 必须由调用方传进来（最后一个确认成功的片号），不能沿用 journal
+    里的旧值——v0.2.1 那次实测就是这里漏了：resume 跑完 150 片，finish
+    只补了 verdict/evidence/finished/elapsed_s，done 还停在阶段一的 100。
+    日志和下载回算都证明传完了，错的只是账本。
+    """
+    if done is not None:
+        j["done"] = done
     j["verdict"] = verdict
     j["evidence"] = evidence
     j["finished"] = time.strftime("%F %T")
@@ -386,6 +415,16 @@ def finish(j, verdict, evidence, t0):
         log("下一步：先查服务端怎么合并跨会话的分片，再定方案；别急着写续传。")
     else:
         log("下一步：没有观测到结论。换个时间/网络重跑一次，不要据此改设计。")
+
+    # ── 回归断言 ────────────────────────────────────────────────
+    # 「片都传完了」这个前提成立时（接受 / 不完整两种判定都是传完才验的），
+    # 账本上的 done 必须等于 total。不等就是进度持久化有缺陷，用 91 单独报，
+    # 不要把它和服务端的结论混成一个退出码。
+    if verdict in (V_ACCEPT, V_INCOMPLETE) and j.get("done") != j["total"]:
+        log("‼️ 断言失败：片已传完，但 journal 的 done=%r ≠ total=%s" % (
+            j.get("done"), j["total"]))
+        log("   这是探针账本缺陷，不是服务端结论；判定本身仍然有效。")
+        return EXIT_ASSERT
     return EXIT_CODE[verdict]
 
 
