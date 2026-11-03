@@ -130,7 +130,7 @@ docker compose pull
 docker compose up -d
 ```
 
-任务配置、令牌、日志都在 `./data`，升级不动它。想钉住某个版本，在 `.env` 里写 `IMAGE_REF=ghcr.io/mingyangbest/tpbackup:0.2.2`。
+任务配置、令牌、日志都在 `./data`，升级不动它。想钉住某个版本，在 `.env` 里写 `IMAGE_REF=ghcr.io/mingyangbest/tpbackup:0.2.3`。
 
 版本与更新记录：[Releases](https://github.com/mingyangbest/tpbackup/releases) · [CHANGELOG.md](CHANGELOG.md)
 
