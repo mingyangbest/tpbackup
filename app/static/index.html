@@ -136,6 +136,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
   display:inline-flex;align-items:center;gap:6px}
 .tkbar a:hover{text-decoration:underline}
 .tkbar .sp{flex:1}
+/* 深色下这条底是深青，ghost 按钮的默认灰边会被吃掉一档——单独给足对比 */
+:root[data-theme="dark"] .tkbar .btn.ghost{color:#f8fafc;border-color:rgba(45,212,191,.55)}
+:root[data-theme="dark"] .tkbar .btn.ghost:hover{color:#fff;border-color:#2dd4bf}
 
 /* ── 卡片 ── */
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:18px;overflow:hidden;
@@ -596,8 +599,7 @@ tbody.in>tr{animation:rowin .26s ease both}
         <button class="btn ghost mini" onclick="copyTokenUrl()">复制链接</button>
       </div>
       <div class="hint" style="line-height:1.9;margin-bottom:14px">
-        账号密码、短信验证码、APP 扫码三种方式都行，<b>把 refresh_token 一起复制回来</b>——只填 access_token 的话 7 天后必断，没法自动续期。
-        取完别再去网页端登录联通云盘，会把这条登录踢掉。
+        账号密码、短信验证码、APP 扫码都行，<b>把 refresh_token 一起复制回来</b>——只填 access_token 的话 7 天后必断且没法自动续期。取完别再用网页端登录云盘，会把这条登录踢掉。
       </div>
       <div class="field">
         <label>access_token</label>
