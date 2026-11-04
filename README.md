@@ -70,7 +70,11 @@ docker compose -f docker-compose.build.yml up -d --build
 
 ### 装完第一步：放令牌
 
-容器自己不走登录流程，第一次的令牌要在外部拿。打开 <https://alistgo.com/tool/wopan/token.html>，支持账号密码、短信验证码、APP 扫码三种方式。
+容器自己不走登录流程，第一次的令牌要在外部拿：
+
+**→ [打开 AList 令牌工具](https://alistgo.com/tool/wopan/token.html)**
+
+支持账号密码、短信验证码、APP 扫码三种方式。这个地址在面板里也放了一份（Token 卡片和粘贴弹窗），取到令牌直接粘，不用记网址。
 
 两个必须注意的点：
 
@@ -179,6 +183,7 @@ compose 里的这几个变量从 `.env` 读，不起作用时先看 `.env` 在�
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
+| `TP_TOKEN_URL` | alistgo 的令牌工具 | 面板里「去取令牌」按钮指向的地址。只接受 http/https，填别的会退回默认值；那个工具站换域名时改这里就行，不用等发版 |
 | `TP_DATA` | /app/data | 配置、令牌、日志、SQLite 的存放位置 |
 | `TP_RESUME` | 1 | 是否启用大文件断点续传。设 `0` 关闭，之后每个文件都是一次全新上传（与 v0.2.1 行为一致） |
 | `TP_RESUME_MIN_SIZE` | 16777216 | 多大的文件才走断点续传（字节）。默认 16MiB；再小的文件本来就只有一两片，存会话只是多一次写盘 |
