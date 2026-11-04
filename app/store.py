@@ -10,6 +10,17 @@ import time
 TOKEN_TTL = 604799
 TOKEN_RENEW_AHEAD = 2 * 86400
 
+# 取令牌的入口，界面上做成可点链接。这个地址会进 href，所以只放行 http(s)：
+# 填成 javascript: 之类的一律退回默认值，免得配错一个环境变量就成了 XSS。
+TOKEN_URL_DEFAULT = "https://alistgo.com/tool/wopan/token.html"
+
+
+def token_url(raw=None):
+    """TP_TOKEN_URL 的规整。空值或非 http(s) 一律用默认地址。"""
+    u = (os.environ.get("TP_TOKEN_URL", "") if raw is None else raw) or ""
+    u = u.strip()
+    return u if u.startswith(("http://", "https://")) else TOKEN_URL_DEFAULT
+
 
 class TokenStore:
     """token 的落盘与续期。

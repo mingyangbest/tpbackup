@@ -36,7 +36,7 @@ from .paths import within
 from apscheduler.triggers.cron import CronTrigger
 from .runner import Runner
 from .scheduler import Scheduler
-from .store import DB, SessionStore, TokenStore
+from .store import DB, SessionStore, TokenStore, token_url
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -226,6 +226,8 @@ def overview(_=Depends(auth)):
         "running": len(runner.running_list()),
         "ok_today": ok_today, "fail_today": fail_today, "last_success": last_ok,
         "token": store.info(),
+        # 取令牌的地址（TP_TOKEN_URL 可改），前端拿去做「去取令牌」按钮
+        "token_url": token_url(),
     }
 
 

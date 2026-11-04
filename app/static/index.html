@@ -105,6 +105,38 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 .c1{background:#14b8a6}.c2{background:#3b82f6}.c3{background:#f59e0b}
 .c4{background:#22c55e}.c5{background:#8b5cf6}
 
+/* ── 顶部引导条：没配令牌 / 令牌快到期。默认不占位，有问题才出现 ── */
+.notice{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  border:1px solid var(--line);border-left:3px solid var(--warn);
+  background:var(--hover);border-radius:10px;padding:12px 16px;margin:18px 0 0}
+.notice.bad{border-left-color:var(--bad)}
+.notice .nt-txt{flex:1;min-width:220px}
+.notice .nt-txt b{display:block;font-size:13px;font-weight:600;line-height:1.5}
+.notice .nt-txt span{font-size:12px;color:var(--ink2);line-height:1.6}
+.notice .nt-act{display:flex;gap:8px;flex-wrap:wrap}
+.notice a.btn{text-decoration:none}
+@media(max-width:680px){.notice{padding:12px 14px}.notice .nt-act{width:100%}}
+
+/* 小号按钮：KPI 卡里的行内动作，不抢主按钮的重量 */
+.btn.mini{padding:3px 10px;font-size:11.5px;border-radius:7px;font-weight:500}
+
+/* KPI 卡副标题里的「粘贴令牌」：从灰字抬成强调色 + 下划线，扫一眼能看到 */
+.kpi .sb .tok-lnk{color:var(--accent-deep);font-weight:600;cursor:pointer;
+  text-decoration:underline;text-underline-offset:2px}
+.kpi .sb .tok-lnk:hover{color:var(--accent)}
+/* Token 卡（固定是最后一张）副标题允许折行：卡宽只有两百来像素，
+   一行放不下「时间 · 粘贴令牌」时不能被省略号吃掉入口 */
+#kpis .kpi:last-child .sb{white-space:normal;overflow:visible;text-overflow:clip}
+
+/* 取令牌那条：弹窗顶部的整行入口，比行内链接难漏看 */
+.tkbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  border:1px solid var(--accent);background:var(--accent-l);border-radius:9px;
+  padding:9px 12px;margin-bottom:14px}
+.tkbar a{color:var(--accent-deep);font-weight:600;font-size:12.5px;text-decoration:none;
+  display:inline-flex;align-items:center;gap:6px}
+.tkbar a:hover{text-decoration:underline}
+.tkbar .sp{flex:1}
+
 /* ── 卡片 ── */
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:18px;overflow:hidden;
   transition:border-color .25s ease}
@@ -371,6 +403,8 @@ tbody.in>tr{animation:rowin .26s ease both}
 
 <main class="wrap">
 
+  <div id="notice"></div>
+
   <div class="kpis" id="kpis"></div>
 
   <div class="grid2">
@@ -554,6 +588,17 @@ tbody.in>tr{animation:rowin .26s ease both}
       <button class="btn ghost" onclick="closeToken()">关闭</button>
     </div>
     <div class="modal-b">
+      <div class="tkbar">
+        <a id="tkOpen" href="https://alistgo.com/tool/wopan/token.html" target="_blank" rel="noopener">
+          ① 打开 AList 令牌工具取令牌 ↗
+        </a>
+        <span class="sp"></span>
+        <button class="btn ghost mini" onclick="copyTokenUrl()">复制链接</button>
+      </div>
+      <div class="hint" style="line-height:1.9;margin-bottom:14px">
+        账号密码、短信验证码、APP 扫码三种方式都行，<b>把 refresh_token 一起复制回来</b>——只填 access_token 的话 7 天后必断，没法自动续期。
+        取完别再去网页端登录联通云盘，会把这条登录踢掉。
+      </div>
       <div class="field">
         <label>access_token</label>
         <textarea id="tkAt" rows="3" spellcheck="false" placeholder="从 AList 令牌工具复制" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
@@ -563,8 +608,7 @@ tbody.in>tr{animation:rowin .26s ease both}
         <textarea id="tkRt" rows="2" spellcheck="false" placeholder="没有它，7 天后凭证会断且无法自动续期" style="width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
       </div>
       <div class="hint" style="line-height:1.9">
-        令牌用 <a href="https://alistgo.com/tool/wopan/token.html" target="_blank" rel="noopener">AList 令牌工具</a> 获取；取完别再去网页端登录联通云盘，会把这条登录踢掉。<br>
-        保存前会先用新令牌真连一次云端（列一次云盘根目录），通过才落盘——验不过就什么都不改，现有凭证不会丢。
+        ② 粘好点「保存并验证」。保存前会先用新令牌真连一次云端（列一次云盘根目录），通过才落盘——验不过就什么都不改，现有凭证不会丢。
       </div>
     </div>
     <div class="modal-f">
@@ -808,6 +852,7 @@ async function loadOverview(){
     throw e;
   }
   renderKpis();
+  renderNotice();
 }
 
 function renderKpis(){
@@ -827,8 +872,8 @@ function renderKpis(){
     kpiCard('c3','key','Token 剩余',
       tk.remain_days==null?'—':`<span class="${tcls}">${tk.remain_days}</span>`,
       ' 天',
-      (tk.updated?('签发 '+esc(tk.updated.slice(5,16))):'未初始化') +
-      ' · <span class="lnk" style="font-size:11px;padding:0 2px" onclick="openToken()" title="粘贴 access_token / refresh_token，不用再 SSH 改文件">粘贴令牌</span>');
+      (tk.updated?('签发 '+esc(tk.updated.slice(5,10))):'<b style="color:var(--bad)">未配置</b>') +
+      '<br><span class="lnk tok-lnk" onclick="openToken()" title="粘贴 access_token / refresh_token，不用再 SSH 改文件">粘贴令牌</span>');
 }
 
 /* ── 统计 + 图表 ── */
@@ -1518,9 +1563,82 @@ function copyCard(){
   } else { toast('当前浏览器不支持一键复制'); }
 }
 /* ── 粘贴令牌 ── */
+/* ── 令牌引导 ──
+   只在两种情况下占版面：一次都没配过、以及该续期却没续上（剩余 <1 天）。
+   1~2 天是正常的自动续期窗口，这时候亮橙条等于每天喊一次狼来了，
+   久了就没人看它——所以阈值压到 1 天，剩下的交给手动续期按钮。 */
+const TOKEN_URL_FALLBACK = 'https://alistgo.com/tool/wopan/token.html';
+function tokenUrl(){
+  const u = (window.OV && window.OV.token_url) || TOKEN_URL_FALLBACK;
+  return /^https?:\/\//.test(u) ? u : TOKEN_URL_FALLBACK;
+}
+function renderNotice(){
+  const tk = (window.OV || {}).token || {};
+  const box = $('notice');
+  if (!box) return;
+  const url = esc(tokenUrl());
+  let html = '';
+  if (!tk.updated){
+    html = `<div class="notice">
+      <div class="nt-txt"><b>还没有配置云盘令牌，备份任务跑不起来</b>
+        <span>令牌在 AList 工具里取，取的时候把 refresh_token 一起复制回来。</span></div>
+      <div class="nt-act">
+        <a class="btn ghost" href="${url}" target="_blank" rel="noopener">打开取令牌 ↗</a>
+        <button class="btn primary" onclick="openToken()">粘贴令牌</button>
+      </div></div>`;
+  } else if (tk.remain_days != null && tk.remain_days < 1){
+    const hrs = Math.max(0, Math.round((tk.remain_sec || 0) / 3600));
+    html = `<div class="notice bad">
+      <div class="nt-txt"><b>令牌只剩约 ${hrs} 小时，自动续期没有生效</b>
+        <span>正常在剩余 2 天时就该自动续期了，现在还没续上，多半是 refresh_token 失效。先试一次手动续期，不行就重新取令牌。</span></div>
+      <div class="nt-act">
+        <button class="btn ghost" onclick="renewToken(this)">立即续期</button>
+        <button class="btn primary" onclick="openToken()">重新粘贴令牌</button>
+      </div></div>`;
+  }
+  box.innerHTML = html;
+}
+async function renewToken(btn){
+  if (btn) btn.classList.add('busy');
+  try{
+    const r = await api('/api/token/renew', {method: 'POST'});
+    const d = (r && r.info && r.info.remain_days);
+    toast(d != null ? `续期成功，剩余 ${d} 天` : '续期成功');
+    await loadOverview();
+  }catch(e){
+    toast('续期失败：' + e.message);
+  }finally{
+    if (btn) btn.classList.remove('busy');
+  }
+}
+function legacyCopy(t){
+  try{
+    const ta = document.createElement('textarea');
+    ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  }catch(e){ return false; }
+}
+/* 内网 http 下 navigator.clipboard 不可用（非安全上下文），要留 execCommand 兜底 */
+function copyTokenUrl(){
+  const u = tokenUrl();
+  const done = () => toast('链接已复制');
+  const fail = () => toast('复制失败，地址：' + u);
+  try{
+    if (navigator.clipboard && window.isSecureContext){
+      navigator.clipboard.writeText(u).then(done, () => (legacyCopy(u) ? done() : fail()));
+      return;
+    }
+  }catch(e){}
+  legacyCopy(u) ? done() : fail();
+}
+
 function openToken(){
   $('tkAt').value = '';
   $('tkRt').value = '';
+  try{ $('tkOpen').href = tokenUrl(); }catch(e){}   // TP_TOKEN_URL 可能改过
   $('tokenMask').classList.add('on');
   setTimeout(() => { try { $('tkAt').focus(); } catch(e){} }, 60);
 }
