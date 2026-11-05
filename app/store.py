@@ -22,6 +22,25 @@ def token_url(raw=None):
     return u if u.startswith(("http://", "https://")) else TOKEN_URL_DEFAULT
 
 
+def cloud_chain(task):
+    """任务的云端路径链（['AlbumBackup', 'photos']）。
+
+    tasks.cloud 落库是 JSON 字符串，不是 list。直接对它 list() 或
+    "/".join() 会按字符拆开——2026-10-28 和 2026-11-05 各踩过一次：
+    云端路径变成 ['"', 'A', 'l', 'b' …]。凡是拿这个字段的地方都走这里。
+    """
+    c = (task or {}).get("cloud") or []
+    if isinstance(c, str):
+        try:
+            c = json.loads(c)
+        except Exception:
+            c = []
+    # 解析出来不是数组（比如被手工写成 {"a":1}）时也只当空，别让键名冒充路径
+    if not isinstance(c, (list, tuple)):
+        c = []
+    return [str(x) for x in c if x]
+
+
 class TokenStore:
     """token 的落盘与续期。
 

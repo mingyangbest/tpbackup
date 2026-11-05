@@ -36,7 +36,7 @@ from .paths import within
 from apscheduler.triggers.cron import CronTrigger
 from .runner import Runner
 from .scheduler import Scheduler
-from .store import DB, SessionStore, TokenStore, token_url
+from .store import DB, SessionStore, TokenStore, cloud_chain as _cloud_chain, token_url
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -785,12 +785,20 @@ def _decorate_run(r):
 # ── 云端占用 ────────────────────────────────────────────────
 _CLOUD = {"at": 0.0, "data": None, "running": False, "err": ""}
 CLOUD_CACHE = os.path.join(DATA, "state", "cloud_usage.json")
+# 缓存结构版本。v2 起 cloud 字段是正常路径（AlbumBackup/photos），
+# v1 存的是 "/".join(JSON 字符串) 出来的逐字符乱码，必须作废重算。
+CLOUD_CACHE_V = 2
 
 
 def _load_cloud_cache():
     """统计一次要 2~3 分钟，结果落盘，重启后立刻有数，不用再等一遍。"""
     try:
         d = json.load(open(CLOUD_CACHE, encoding="utf-8"))
+        # v1 及更早的缓存里 cloud 字段是逐字符乱码（"/".join 了 JSON 字符串），
+        # 认出来直接丢弃，让下一次统计重算，避免修复后还显示旧数据 24 小时。
+        if d.get("v") != CLOUD_CACHE_V:
+            log.info("云端占用缓存是旧版本（v=%s），丢弃后重算", d.get("v"))
+            return
         if d.get("tasks"):
             _CLOUD["data"] = {"tasks": d["tasks"],
                               "total_bytes": d.get("total_bytes", 0),
@@ -807,7 +815,7 @@ def _save_cloud_cache(data):
     try:
         tmp = CLOUD_CACHE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+            json.dump(dict(data, v=CLOUD_CACHE_V), f, ensure_ascii=False)
         os.replace(tmp, CLOUD_CACHE)
     except Exception as e:
         log.warning("写入云端占用缓存失败: %s", e)
@@ -830,7 +838,8 @@ def _refresh_cloud():
             for t in db.list_tasks():
                 cid = engine_find_dir(w, _cloud_chain(t))
                 row = {"task_id": t["id"], "name": t["name"],
-                       "cloud": "/".join(t.get("cloud") or [])}
+                       # 展示用：段与段之间一个斜杠，别出现 /AlbumBackup//photos/
+                       "cloud": "/".join(x.strip("/") for x in _cloud_chain(t))}
                 if not cid:
                     row.update({"files": None, "bytes": None, "error": "云端目录不存在"})
                 else:
@@ -892,18 +901,6 @@ class RestoreIn(BaseModel):
     task_id: int
     path: str = ""
     dest: str
-
-
-def _cloud_chain(t):
-    """tasks.cloud 在库里是 JSON 字符串，直接 list() 会按字符拆开——
-    2026-10-28 实测踩到：云端路径变成 ['"','A','l','b'...]。统一在这里解析。"""
-    c = t.get("cloud") or []
-    if isinstance(c, str):
-        try:
-            c = json.loads(c)
-        except Exception:
-            c = []
-    return [str(x) for x in c if x]
 
 
 def _resolve_cloud(w, t, path):
