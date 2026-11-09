@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """tpbackup —— 联通云盘备份管理台"""
+import base64
+import ipaddress
 import json
 import logging
 import os
@@ -15,7 +17,6 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -46,6 +47,44 @@ log = logging.getLogger("tpbackup")
 DATA = os.environ.get("TP_DATA", "/app/data")
 WEB_USER = os.environ.get("TP_USER", "admin")
 WEB_PASS = os.environ.get("TP_PASS", "tpbackup")
+
+# ── 访问控制 ────────────────────────────────────────────────
+# 默认不要密码：按来源网段放行。能连上内网就等于有权限，公网/别的网段
+# 直接 403（不用 401，免得浏览器弹原生登录框）。
+# 想退回「账号密码」就设 TP_AUTH_MODE=basic，TP_USER/TP_PASS 照旧生效。
+AUTH_MODE = os.environ.get("TP_AUTH_MODE", "trust").strip().lower()
+# 172.16/12 是必须带上的：宿主机自己经 docker-proxy 访问 127.0.0.1:8088 时，
+# 容器里看到的源地址是 docker 网关（实测 172.17.0.1），不是 127.0.0.1。
+# 少了它，push.py / smoke_test.py 这些从宿主机发起的调用会全被 403 挡掉。
+# 它不会放宽外部访问——局域网客户端的源地址是保留的，不会被改写成 172.x。
+TRUST_CIDR = os.environ.get(
+    "TP_TRUST_CIDR",
+    "127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12")
+
+
+def parse_cidrs(raw):
+    """逗号分隔的网段或单 IP。写错的项跳过，别让一个手滑把所有人挡在门外。"""
+    out = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            continue
+    return out
+
+
+TRUST_NETS = parse_cidrs(TRUST_CIDR)
+
+
+def ip_allowed(ip, nets=None):
+    try:
+        addr = ipaddress.ip_address((ip or "").strip())
+    except ValueError:
+        return False
+    return any(addr in n for n in (TRUST_NETS if nets is None else nets))
 OPENLIST_DB = os.environ.get("TP_OPENLIST_DB", "")
 SYNC_OPENLIST = os.environ.get("TP_SYNC_OPENLIST", "0") == "1"
 # 推送型任务清理旧包时永不删除的文件名，逗号分隔。比如云端目录里放了
@@ -78,7 +117,6 @@ scheduler = Scheduler(db, runner)
 
 app = FastAPI(title="tpbackup", docs_url=None, redoc_url=None,
               lifespan=lambda app: _lifespan(app))
-security = HTTPBasic()
 
 
 @asynccontextmanager
@@ -104,13 +142,18 @@ async def _lifespan(app):
             log.warning("尚无可用 token —— 需完成联通云盘授权，或手工放置 state/token.json")
     except Exception as e:
         log.warning("token 初始化失败: %s", e)
-    # 默认弱口令是给首次体验用的。这个服务能改文件、能读云盘凭证，
-    # 公网暴露 + 默认密码等于把云盘交出去，启动时喊一嗓子。
-    if WEB_PASS == "tpbackup":
-        log.warning("=" * 66)
-        log.warning("TP_PASS 仍是默认密码 tpbackup —— 本服务可读写文件与云盘凭证，")
-        log.warning("请尽快在 compose 里修改 TP_PASS 并重启容器；勿将 8088 直接暴露公网")
-        log.warning("=" * 66)
+    # 免密模式下唯一的安全边界就是来源网段，启动时把生效范围喊出来——
+    # 免得哪天路由器加了端口映射，还不知道自己在裸奔。
+    if AUTH_MODE == "basic":
+        if WEB_PASS == "tpbackup":
+            log.warning("=" * 66)
+            log.warning("TP_PASS 仍是默认密码 tpbackup —— 本服务可读写文件与云盘凭证，")
+            log.warning("请尽快在 compose 里修改 TP_PASS 并重启容器；勿将 8088 直接暴露公网")
+            log.warning("=" * 66)
+    else:
+        log.warning("访问控制：免密模式，仅放行 %s；其他来源一律 403",
+                    TRUST_CIDR or "（空，等于全部拒绝）")
+        log.warning("8088 若被映射到公网，请确认反向代理没把来源 IP 改成本机")
     _load_cloud_cache()
     scheduler.start()
     # 云端占用遍历很贵（6000+ 文件要跑几分钟），只在凌晨统计一次，界面读缓存
@@ -127,13 +170,36 @@ async def _lifespan(app):
     scheduler.shutdown()
 
 
-def auth(c: HTTPBasicCredentials = Depends(security)):
-    ok_u = secrets.compare_digest(c.username.encode(), WEB_USER.encode())
-    ok_p = secrets.compare_digest(c.password.encode(), WEB_PASS.encode())
-    if not (ok_u and ok_p):
+def _client_ip(request):
+    return request.client.host if getattr(request, "client", None) else ""
+
+
+def _basic_ok(request):
+    """老式的 Basic 凭据，只在 TP_AUTH_MODE=basic 时用，给宿主机脚本留的。"""
+    scheme, _, param = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "basic" or not param:
+        return False
+    try:
+        user, _, pwd = base64.b64decode(param).decode("utf-8").partition(":")
+    except Exception:
+        return False
+    return (secrets.compare_digest(user, WEB_USER)
+            and secrets.compare_digest(pwd, WEB_PASS))
+
+
+def auth(request: Request):
+    """访问控制。默认按来源网段放行；TP_AUTH_MODE=basic 时退回账号密码。"""
+    if AUTH_MODE == "basic":
+        if _basic_ok(request):
+            return {"username": WEB_USER, "role": "admin"}
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "认证失败",
                             {"WWW-Authenticate": "Basic"})
-    return c.username
+    ip = _client_ip(request)
+    if ip_allowed(ip):
+        return {"username": "local", "role": "admin"}
+    log.warning("访问被拒：%s 不在 TP_TRUST_CIDR 内", ip or "未知来源")
+    raise HTTPException(status.HTTP_403_FORBIDDEN,
+                        "这台设备不在允许的网段内：%s" % (ip or "未知来源"))
 
 
 # ── 启动 ────────────────────────────────────────────────────

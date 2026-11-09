@@ -86,7 +86,11 @@ def main():
         print("── 没有可用允许根，中止 ──")
         return 1
 
-    check("无凭据被拒(401)", req("GET", "/api/tasks", auth=False) == 401)
+    # 访问控制：TP_AUTH_MODE=basic 时应 401；默认的 trust 模式（按网段免密）
+    # 下本机在白名单里，应当是 200。403 才说明白名单把本机挡了。
+    anon = req("GET", "/api/tasks", auth=False)
+    check("访问控制生效(401 需凭据 / 200 免密)", anon in (200, 401),
+          "实际 %s；403 表示本机不在 TP_TRUST_CIDR" % anon)
     check("路径穿越被拒(403)", req("GET", "/api/fs/list?path=/etc") == 403)
     check("编码穿越被拒(403)",
           req("GET", "/api/fs/list?path=" + urllib.parse.quote(root + "/../etc")) == 403)

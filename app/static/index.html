@@ -128,6 +128,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
    一行放不下「时间 · 粘贴令牌」时不能被省略号吃掉入口 */
 #kpis .kpi:last-child .sb{white-space:normal;overflow:visible;text-overflow:clip}
 
+/* 被网段白名单拒绝时的整页说明 */
+.blocked{position:fixed;inset:0;background:var(--bg);z-index:9999;
+  display:flex;align-items:center;justify-content:center;padding:24px}
+.blocked .bx{max-width:540px;text-align:center}
+.blocked h2{font-size:18px;font-weight:650;margin-bottom:12px}
+.blocked p{font-size:13px;color:var(--ink2);line-height:1.95}
+.blocked code{background:var(--hover);border:1px solid var(--line);border-radius:5px;
+  padding:1px 6px;font-size:12px;font-family:ui-monospace,Consolas,monospace}
+
 /* 取令牌那条：弹窗顶部的整行入口，比行内链接难漏看 */
 .tkbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
   border:1px solid var(--accent);background:var(--accent-l);border-radius:9px;
@@ -704,8 +713,14 @@ const ico = n => `<svg viewBox="0 0 24 24" fill="currentColor" width="15" height
 
 async function api(path, opt){
   const r = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, opt||{}));
-  if (r.status === 401) { toast('认证失败，请重新输入账号密码'); throw new Error('401'); }
-  if (!r.ok) { let m='请求失败'; try{ m=(await r.json()).detail||m; }catch(e){} throw new Error(m); }
+  if (!r.ok) {
+    let m = '请求失败';
+    try { m = (await r.json()).detail || m; } catch(e) {}
+    const err = new Error(m);
+    err.status = r.status;
+    if (r.status === 401) toast('认证失败，请重新输入账号密码');
+    throw err;
+  }
   return r.status === 204 ? null : r.json();
 }
 
@@ -851,10 +866,26 @@ async function loadOverview(){
   }catch(e){
     $('sysTxt').textContent = '连接失败';
     $('sysDot').classList.add('bad');
+    // 403 是网段白名单挡的，不是密码问题——给一句说明，别让人对着空白页猜
+    if (e && e.status === 403) showBlocked(e.message);
     throw e;
   }
   renderKpis();
   renderNotice();
+}
+
+/* 被网段白名单拒绝时铺一页说明。没有登录框可弹，只能把原因讲清楚。 */
+function showBlocked(msg){
+  if ($('blockedBox')) return;
+  const d = document.createElement('div');
+  d.className = 'blocked';
+  d.id = 'blockedBox';
+  d.innerHTML = `<div class="bx">
+    <h2>这台设备不在允许的网段内</h2>
+    <p>来源：${esc((msg || '').replace('这台设备不在允许的网段内：', '') || '未知')}</p>
+    <p style="margin-top:12px">服务只接受内网访问。换一台同一网段的设备，或调整容器环境变量
+      <code>TP_TRUST_CIDR</code> 后重启容器。</p></div>`;
+  document.body.appendChild(d);
 }
 
 function renderKpis(){
